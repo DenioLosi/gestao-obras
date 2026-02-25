@@ -30,7 +30,6 @@ export default function UnidadeDetalhePage() {
   const [unitStages, setUnitStages] = useState([]);
   const [savingStageId, setSavingStageId] = useState(null);
 
-  // garante que o id é string (Next às vezes entrega array)
   const unitId = useMemo(() => {
     if (!id) return null;
     if (Array.isArray(id)) return id[0] || null;
@@ -39,7 +38,7 @@ export default function UnidadeDetalhePage() {
 
   const unitTitle = useMemo(() => {
     if (!unit) return "Unidade";
-    const label = unit.number ?? unit.name ?? unit.id?.slice(0, 8);
+    const label = unit.name ?? unit.id?.slice(0, 8);
     return `Unidade ${label}`;
   }, [unit]);
 
@@ -61,12 +60,12 @@ export default function UnidadeDetalhePage() {
     const ok = await requireAuth();
     if (!ok) return;
 
-    // ✅ 1) unidade
+    // ✅ unidade (SEM number)
     const unitRes = await supabase
       .from("units")
-      .select("id, number, name, progress, status, project_id")
+      .select("id, name, progress, status, project_id")
       .eq("id", unitId)
-      .maybeSingle(); // <- evita 400 do single quando algo sai do esperado
+      .maybeSingle();
 
     if (unitRes.error) {
       console.error("Erro unitRes:", unitRes.error);
@@ -82,7 +81,7 @@ export default function UnidadeDetalhePage() {
       return;
     }
 
-    // ✅ 2) etapas da unidade
+    // ✅ etapas da unidade
     const stagesRes = await supabase
       .from("unit_stages")
       .select("id, unit_id, stage_id, progress, status, notes, stages(id, name, order_index)")
@@ -144,10 +143,10 @@ export default function UnidadeDetalhePage() {
       prev.map((r) => (r.id === unitStageId ? { ...r, ...patch } : r))
     );
 
-    // recarrega unidade pra pegar progress/status do trigger
+    // recarrega unidade (SEM number)
     const unitRes = await supabase
       .from("units")
-      .select("id, number, name, progress, status, project_id")
+      .select("id, name, progress, status, project_id")
       .eq("id", unitId)
       .maybeSingle();
 
