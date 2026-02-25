@@ -7,25 +7,29 @@ export default function Obras() {
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState(null)
   const [projects, setProjects] = useState([])
+  const [errorMessage, setErrorMessage] = useState("")
 
   useEffect(() => {
     const init = async () => {
-      const { data } = await supabase.auth.getSession()
+      const { data: sessionData } = await supabase.auth.getSession()
 
-      if (!data.session) {
+      if (!sessionData.session) {
         router.push("/login")
         return
       }
 
-      setUser(data.session.user)
+      setUser(sessionData.session.user)
 
-      const { data: projectsData, error } = await supabase
+      const { data, error } = await supabase
         .from("projects")
         .select("*")
         .order("created_at", { ascending: false })
 
-      if (!error) {
-        setProjects(projectsData)
+      if (error) {
+        console.error("Erro ao buscar obras:", error)
+        setErrorMessage(error.message)
+      } else {
+        setProjects(data || [])
       }
 
       setLoading(false)
@@ -34,16 +38,27 @@ export default function Obras() {
     init()
   }, [])
 
-  if (loading) return <p style={{ padding: 24 }}>Carregando...</p>
+  if (loading) {
+    return <div style={{ padding: 24 }}>Carregando...</div>
+  }
 
   return (
-    <div style={{ padding: 24 }}>
+    <div style={{ padding: 24, fontFamily: "Arial" }}>
       <h1>Obras</h1>
-      <p>Usuário logado: {user.email}</p>
+
+      <p><strong>Usuário logado:</strong> {user?.email}</p>
 
       <hr style={{ margin: "20px 0" }} />
 
-      {projects.length === 0 && <p>Nenhuma obra encontrada.</p>}
+      {errorMessage && (
+        <div style={{ color: "red", marginBottom: 20 }}>
+          <strong>Erro:</strong> {errorMessage}
+        </div>
+      )}
+
+      {projects.length === 0 && !errorMessage && (
+        <p>Nenhuma obra encontrada.</p>
+      )}
 
       {projects.map((project) => (
         <div
@@ -52,7 +67,8 @@ export default function Obras() {
             padding: 16,
             marginBottom: 12,
             border: "1px solid #ddd",
-            borderRadius: 8
+            borderRadius: 8,
+            background: "#fff"
           }}
         >
           <strong>{project.name}</strong>
