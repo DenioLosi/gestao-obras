@@ -45,15 +45,15 @@ export default function UnidadeDetalhePage() {
     const ok = await requireAuth();
     if (!ok) return;
 
-    // 1) Busca unidade + obra (projects)
+    // 1) Busca unidade (SEM join em projects)
     const unitRes = await supabase
       .from("units")
-      .select("id, number, name, progress, status, project_id, projects(id, name)")
+      .select("id, number, name, progress, status, project_id")
       .eq("id", id)
       .single();
 
     if (unitRes.error) {
-      console.error(unitRes.error);
+      console.error("Erro unitRes:", unitRes.error);
       alert("Erro ao carregar unidade.");
       setLoading(false);
       return;
@@ -66,7 +66,7 @@ export default function UnidadeDetalhePage() {
       .eq("unit_id", id);
 
     if (stagesRes.error) {
-      console.error(stagesRes.error);
+      console.error("Erro stagesRes:", stagesRes.error);
       alert("Erro ao carregar etapas.");
       setLoading(false);
       return;
@@ -97,7 +97,7 @@ export default function UnidadeDetalhePage() {
     // update em unit_stages
     const upd = await supabase.from("unit_stages").update(patch).eq("id", unitStageId);
     if (upd.error) {
-      console.error(upd.error);
+      console.error("Erro upd:", upd.error);
       alert("Erro ao salvar etapa.");
       setSavingStageId(null);
       return;
@@ -116,7 +116,6 @@ export default function UnidadeDetalhePage() {
         new_value: newValue ?? null,
       });
       if (ins.error) {
-        // log não é crítico pro MVP, mas mostramos no console
         console.error("Falha ao inserir log:", ins.error);
       }
     }
@@ -129,7 +128,7 @@ export default function UnidadeDetalhePage() {
     // recarrega unidade (pra pegar progress/status recalculado pelos triggers)
     const unitRes = await supabase
       .from("units")
-      .select("id, number, name, progress, status, project_id, projects(id, name)")
+      .select("id, number, name, progress, status, project_id")
       .eq("id", id)
       .single();
 
@@ -139,11 +138,16 @@ export default function UnidadeDetalhePage() {
   }
 
   async function setStageQuickStatus(row, target) {
-    const old = { progress: row.progress ?? 0, status: row.status ?? "pending", notes: row.notes ?? "" };
+    const old = {
+      progress: row.progress ?? 0,
+      status: row.status ?? "pending",
+      notes: row.notes ?? "",
+    };
 
     let nextProgress = row.progress ?? 0;
     if (target === "pending") nextProgress = 0;
-    if (target === "in_progress") nextProgress = Math.max(1, Math.min(99, clampProgress(nextProgress || 50)));
+    if (target === "in_progress")
+      nextProgress = Math.max(1, Math.min(99, clampProgress(nextProgress || 50)));
     if (target === "done") nextProgress = 100;
 
     const patch = { progress: nextProgress };
@@ -179,17 +183,41 @@ export default function UnidadeDetalhePage() {
 
   return (
     <div style={{ padding: 16, maxWidth: 1000, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          alignItems: "center",
+        }}
+      >
         <div>
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            Obra: {unit?.projects?.name ?? unit.project_id ?? "-"}
+            Obra (project_id): {unit.project_id ?? "-"}
           </div>
+
           <h1 style={{ margin: "6px 0" }}>{unitTitle}</h1>
+
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <span style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #ddd", borderRadius: 999 }}>
+            <span
+              style={{
+                fontSize: 12,
+                padding: "4px 8px",
+                border: "1px solid #ddd",
+                borderRadius: 999,
+              }}
+            >
               Status: {unit.status || "-"}
             </span>
-            <span style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #ddd", borderRadius: 999 }}>
+
+            <span
+              style={{
+                fontSize: 12,
+                padding: "4px 8px",
+                border: "1px solid #ddd",
+                borderRadius: 999,
+              }}
+            >
               Progresso: {Math.round(unit.progress ?? 0)}%
             </span>
           </div>
@@ -211,8 +239,22 @@ export default function UnidadeDetalhePage() {
           const disabled = savingStageId === row.id;
 
           return (
-            <div key={row.id} style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+            <div
+              key={row.id}
+              style={{
+                border: "1px solid #e5e5e5",
+                borderRadius: 12,
+                padding: 12,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  alignItems: "center",
+                }}
+              >
                 <div>
                   <div style={{ fontWeight: 600 }}>{stageName}</div>
                   <div style={{ fontSize: 12, opacity: 0.75 }}>
@@ -224,7 +266,10 @@ export default function UnidadeDetalhePage() {
                   <button disabled={disabled} onClick={() => setStageQuickStatus(row, "pending")}>
                     Pendente
                   </button>
-                  <button disabled={disabled} onClick={() => setStageQuickStatus(row, "in_progress")}>
+                  <button
+                    disabled={disabled}
+                    onClick={() => setStageQuickStatus(row, "in_progress")}
+                  >
                     Em andamento
                   </button>
                   <button disabled={disabled} onClick={() => setStageQuickStatus(row, "done")}>
@@ -234,18 +279,27 @@ export default function UnidadeDetalhePage() {
               </div>
 
               <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.8 }}>Observações</div>
+                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.8 }}>
+                  Observações
+                </div>
+
                 <textarea
                   defaultValue={row.notes || ""}
                   placeholder="Escreva observações desta etapa…"
                   rows={3}
-                  style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
+                  style={{
+                    width: "100%",
+                    padding: 10,
+                    borderRadius: 10,
+                    border: "1px solid #ddd",
+                  }}
                   onBlur={(e) => {
                     const value = e.target.value;
                     if ((value || "") !== (row.notes || "")) saveNotes(row, value);
                   }}
                   disabled={disabled}
                 />
+
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>
                   (Salva ao sair do campo)
                 </div>
