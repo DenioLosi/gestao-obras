@@ -360,5 +360,3 @@ export default function ObrasPage() {
     </div>
   )
 }
-  )
-}
