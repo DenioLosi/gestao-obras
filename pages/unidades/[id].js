@@ -15,12 +15,6 @@ const supabase = createClient(
   }
 );
 
-function clampProgress(v) {
-  const n = Number(v);
-  if (Number.isNaN(n)) return 0;
-  return Math.max(0, Math.min(100, Math.round(n)));
-}
-
 export default function UnidadeDetalhePage() {
   const router = useRouter();
   const { id } = router.query;
@@ -38,8 +32,7 @@ export default function UnidadeDetalhePage() {
 
   const unitTitle = useMemo(() => {
     if (!unit) return "Unidade";
-    const label = unit.name ?? unit.id?.slice(0, 8);
-    return `Unidade ${label}`;
+    return `Unidade ${unit.id?.slice(0, 8)}`;
   }, [unit]);
 
   async function requireAuth() {
@@ -60,10 +53,10 @@ export default function UnidadeDetalhePage() {
     const ok = await requireAuth();
     if (!ok) return;
 
-    // ✅ unidade (SEM number)
+    // ✅ unidade: só colunas garantidas
     const unitRes = await supabase
       .from("units")
-      .select("id, name, progress, status, project_id")
+      .select("id, project_id")
       .eq("id", unitId)
       .maybeSingle();
 
@@ -113,7 +106,7 @@ export default function UnidadeDetalhePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, unitId]);
 
-  async function updateStage(unitStageId, patch, logAction, oldValue, newValue) {
+  async function updateStage(unitStageId, patch) {
     setSavingStageId(unitStageId);
 
     const upd = await supabase.from("unit_stages").update(patch).eq("id", unitStageId);
@@ -124,62 +117,24 @@ export default function UnidadeDetalhePage() {
       return;
     }
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const userId = sessionData?.session?.user?.id;
-
-    if (userId) {
-      const ins = await supabase.from("unit_stage_logs").insert({
-        unit_stage_id: unitStageId,
-        user_id: userId,
-        action: logAction,
-        old_value: oldValue ?? null,
-        new_value: newValue ?? null,
-      });
-
-      if (ins.error) console.error("Falha ao inserir log:", ins.error);
-    }
-
     setUnitStages((prev) =>
       prev.map((r) => (r.id === unitStageId ? { ...r, ...patch } : r))
     );
-
-    // recarrega unidade (SEM number)
-    const unitRes = await supabase
-      .from("units")
-      .select("id, name, progress, status, project_id")
-      .eq("id", unitId)
-      .maybeSingle();
-
-    if (!unitRes.error && unitRes.data) setUnit(unitRes.data);
 
     setSavingStageId(null);
   }
 
   async function setStageQuickStatus(row, target) {
-    const old = {
-      progress: row.progress ?? 0,
-      status: row.status ?? "pending",
-      notes: row.notes ?? "",
-    };
-
     let nextProgress = row.progress ?? 0;
     if (target === "pending") nextProgress = 0;
-    if (target === "in_progress")
-      nextProgress = Math.max(1, Math.min(99, clampProgress(nextProgress || 50)));
+    if (target === "in_progress") nextProgress = Math.max(1, Math.min(99, nextProgress || 50));
     if (target === "done") nextProgress = 100;
 
-    const patch = { progress: nextProgress };
-    const next = { ...old, progress: nextProgress };
-
-    await updateStage(row.id, patch, "progress_changed", old, next);
+    await updateStage(row.id, { progress: nextProgress });
   }
 
   async function saveNotes(row, notes) {
-    const old = { notes: row.notes ?? "" };
-    const patch = { notes: notes ?? "" };
-    const next = { notes: notes ?? "" };
-
-    await updateStage(row.id, patch, "note_updated", old, next);
+    await updateStage(row.id, { notes: notes ?? "" });
   }
 
   if (loading) {
@@ -204,19 +159,9 @@ export default function UnidadeDetalhePage() {
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            Obra (project_id): {unit.project_id ?? "-"}
+            project_id: {unit.project_id ?? "-"}
           </div>
-
           <h1 style={{ margin: "6px 0" }}>{unitTitle}</h1>
-
-          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <span style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #ddd", borderRadius: 999 }}>
-              Status: {unit.status || "-"}
-            </span>
-            <span style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #ddd", borderRadius: 999 }}>
-              Progresso: {Math.round(unit.progress ?? 0)}%
-            </span>
-          </div>
         </div>
 
         <Link href="/obras" style={{ fontSize: 14 }}>
