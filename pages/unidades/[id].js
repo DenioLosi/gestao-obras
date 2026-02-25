@@ -74,10 +74,10 @@ export default function UnidadeDetalhePage() {
       return;
     }
 
-    // ✅ etapas da unidade
+    // ✅ etapas: SEM progress (porque não existe no seu schema)
     const stagesRes = await supabase
       .from("unit_stages")
-      .select("id, unit_id, stage_id, progress, status, notes, stages(id, name, order_index)")
+      .select("id, unit_id, stage_id, status, notes, stages(id, name, order_index)")
       .eq("unit_id", unitId);
 
     if (stagesRes.error) {
@@ -124,13 +124,8 @@ export default function UnidadeDetalhePage() {
     setSavingStageId(null);
   }
 
-  async function setStageQuickStatus(row, target) {
-    let nextProgress = row.progress ?? 0;
-    if (target === "pending") nextProgress = 0;
-    if (target === "in_progress") nextProgress = Math.max(1, Math.min(99, nextProgress || 50));
-    if (target === "done") nextProgress = 100;
-
-    await updateStage(row.id, { progress: nextProgress });
+  async function setStageStatus(row, targetStatus) {
+    await updateStage(row.id, { status: targetStatus });
   }
 
   async function saveNotes(row, notes) {
@@ -176,7 +171,6 @@ export default function UnidadeDetalhePage() {
       <div style={{ display: "grid", gap: 12 }}>
         {unitStages.map((row) => {
           const stageName = row?.stages?.name || row.stage_id;
-          const p = Math.round(row.progress ?? 0);
           const disabled = savingStageId === row.id;
 
           return (
@@ -185,18 +179,18 @@ export default function UnidadeDetalhePage() {
                 <div>
                   <div style={{ fontWeight: 600 }}>{stageName}</div>
                   <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    {row.status || "—"} • {p}%
+                    Status: {row.status || "—"}
                   </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button disabled={disabled} onClick={() => setStageQuickStatus(row, "pending")}>
+                  <button disabled={disabled} onClick={() => setStageStatus(row, "pending")}>
                     Pendente
                   </button>
-                  <button disabled={disabled} onClick={() => setStageQuickStatus(row, "in_progress")}>
+                  <button disabled={disabled} onClick={() => setStageStatus(row, "in_progress")}>
                     Em andamento
                   </button>
-                  <button disabled={disabled} onClick={() => setStageQuickStatus(row, "done")}>
+                  <button disabled={disabled} onClick={() => setStageStatus(row, "done")}>
                     Concluído
                   </button>
                 </div>
