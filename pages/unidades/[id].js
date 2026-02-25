@@ -32,7 +32,8 @@ export default function UnidadeDetalhePage() {
 
   const unitTitle = useMemo(() => {
     if (!unit) return "Unidade";
-    return `Unidade ${unit.id?.slice(0, 8)}`;
+    const label = unit.identifier ?? unit.id?.slice(0, 8);
+    return `Unidade ${label}`;
   }, [unit]);
 
   async function requireAuth() {
@@ -53,10 +54,10 @@ export default function UnidadeDetalhePage() {
     const ok = await requireAuth();
     if (!ok) return;
 
-    // ✅ unidade: só colunas garantidas
+    // ✅ unidade: agora traz identifier
     const unitRes = await supabase
       .from("units")
-      .select("id, project_id")
+      .select("id, project_id, identifier")
       .eq("id", unitId)
       .maybeSingle();
 
@@ -74,7 +75,7 @@ export default function UnidadeDetalhePage() {
       return;
     }
 
-    // ✅ etapas: SEM progress (porque não existe no seu schema)
+    // ✅ etapas (sem progress por enquanto)
     const stagesRes = await supabase
       .from("unit_stages")
       .select("id, unit_id, stage_id, status, notes, stages(id, name, order_index)")
@@ -154,8 +155,9 @@ export default function UnidadeDetalhePage() {
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            project_id: {unit.project_id ?? "-"}
+            project_id: {unit.project_id ?? "-"} • identifier: {unit.identifier ?? "-"}
           </div>
+
           <h1 style={{ margin: "6px 0" }}>{unitTitle}</h1>
         </div>
 
