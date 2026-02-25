@@ -24,21 +24,86 @@ function formatPct(n) {
   return `${s}%`
 }
 
+function UnitRow({ u }) {
+  const [hover, setHover] = useState(false)
+
+  const pct = Number(u.progress || 0)
+  const icon = pct >= 100 ? '✅' : pct > 0 ? '🟡' : '⏳'
+
+  const rowStyle = {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: hover ? '1px solid #d6d6d6' : '1px solid transparent',
+    background: hover ? 'rgba(0,0,0,0.03)' : 'transparent',
+    transition: 'all 120ms ease',
+  }
+
+  const textStyle = {
+    color: 'inherit',
+    textDecoration: 'none',
+    flex: 1,
+    minWidth: 0,
+    display: 'block',
+  }
+
+  const identifierStyle = {
+    fontWeight: 800,
+    textDecoration: 'underline',
+  }
+
+  const buttonStyle = {
+    padding: '8px 10px',
+    borderRadius: 10,
+    border: hover ? '1px solid #cfcfcf' : '1px solid #ddd',
+    background: '#fff',
+    cursor: 'pointer',
+    boxShadow: hover ? '0 2px 10px rgba(0,0,0,0.06)' : 'none',
+    transition: 'all 120ms ease',
+    whiteSpace: 'nowrap',
+  }
+
+  return (
+    <li
+      style={{ lineHeight: 1.35, listStyle: 'none' }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <div style={rowStyle}>
+        {/* Linha inteira clicável (texto + detalhes) */}
+        <Link href={`/unidades/${u.id}`} style={textStyle}>
+          <span style={identifierStyle}>{u.identifier}</span>
+          {' — '}
+          status: <span>{STATUS_LABEL[u.status] || u.status || '—'}</span>
+          {' — '}
+          progresso: <b>{formatPct(u.progress)}</b> {icon}
+        </Link>
+
+        {/* Botão explícito */}
+        <Link href={`/unidades/${u.id}`}>
+          <button style={buttonStyle}>Abrir</button>
+        </Link>
+      </div>
+    </li>
+  )
+}
+
 export default function ObrasPage() {
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
   const [projects, setProjects] = useState([])
 
-  // Controles da tela (B)
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState('all') // all | pending | in_progress | done
-  const [progressFilter, setProgressFilter] = useState('all') // all | 0 | 1_99 | 100
-  const [sortBy, setSortBy] = useState('unit_number_asc') // unit_number_asc | unit_number_desc | progress_desc | progress_asc | status
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [progressFilter, setProgressFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('unit_number_asc')
 
   async function loadData() {
     setLoading(true)
 
-    // 1) Sessão / usuário
     const { data: authData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !authData?.user) {
       window.location.href = '/login'
@@ -46,7 +111,6 @@ export default function ObrasPage() {
     }
     setUserEmail(authData.user.email || '')
 
-    // 2) Buscar obras (projects) + unidades (units)
     const { data, error } = await supabase
       .from('projects')
       .select(
@@ -88,7 +152,6 @@ export default function ObrasPage() {
     loadData()
   }, [])
 
-  // 3) Aplicar filtros/busca/ordenação (client-side)
   const filteredProjects = useMemo(() => {
     const q = normalize(search)
 
@@ -170,7 +233,6 @@ export default function ObrasPage() {
         Usuário logado: <b>{userEmail}</b>
       </div>
 
-      {/* Barra de controles (busca + filtros + ordenação) */}
       <div
         style={{
           display: 'grid',
@@ -256,7 +318,6 @@ export default function ObrasPage() {
         </div>
       </div>
 
-      {/* Lista de obras */}
       {filteredProjects.length === 0 ? (
         <div style={{ marginTop: 18, color: '#444' }}>Nenhuma unidade encontrada com esses filtros.</div>
       ) : (
@@ -285,64 +346,10 @@ export default function ObrasPage() {
                 {p.units.length === 0 ? (
                   <div style={{ color: '#444' }}>(Sem unidades para exibir com os filtros atuais)</div>
                 ) : (
-                  <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 6 }}>
-                    {p.units.map((u) => {
-                      const pct = Number(u.progress || 0)
-                      const icon = pct >= 100 ? '✅' : pct > 0 ? '🟡' : '⏳'
-
-                      return (
-                        <li
-                          key={u.id}
-                          style={{
-                            lineHeight: 1.35,
-                            display: 'flex',
-                            gap: 10,
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                          }}
-                        >
-                          {/* Área clicável (texto) */}
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <Link
-                              href={`/unidades/${u.id}`}
-                              style={{
-                                color: 'inherit',
-                                textDecoration: 'none',
-                              }}
-                            >
-                              <span
-                                style={{
-                                  fontWeight: 800,
-                                  textDecoration: 'underline',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                {u.identifier}
-                              </span>
-                              {' — '}
-                              status: <span>{STATUS_LABEL[u.status] || u.status || '—'}</span>
-                              {' — '}
-                              progresso: <b>{formatPct(u.progress)}</b> {icon}
-                            </Link>
-                          </div>
-
-                          {/* Botão explícito (fica muito claro pro usuário) */}
-                          <Link href={`/unidades/${u.id}`}>
-                            <button
-                              style={{
-                                padding: '8px 10px',
-                                borderRadius: 10,
-                                border: '1px solid #ddd',
-                                background: '#fff',
-                                cursor: 'pointer',
-                              }}
-                            >
-                              Abrir
-                            </button>
-                          </Link>
-                        </li>
-                      )
-                    })}
+                  <ul style={{ margin: 0, padding: 0, display: 'grid', gap: 6 }}>
+                    {p.units.map((u) => (
+                      <UnitRow key={u.id} u={u} />
+                    ))}
                   </ul>
                 )}
               </div>
@@ -351,5 +358,7 @@ export default function ObrasPage() {
         </div>
       )}
     </div>
+  )
+}
   )
 }
