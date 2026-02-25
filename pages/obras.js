@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { supabase } from '../lib/supabase'
+import { useRouter } from 'next/router'
+import { supabase } from '../../lib/supabase'
 
 const STATUS_LABEL = {
   pending: 'pendente',
@@ -30,78 +31,88 @@ function UnitRow({ u }) {
   const pct = Number(u.progress || 0)
   const icon = pct >= 100 ? '✅' : pct > 0 ? '🟡' : '⏳'
 
-  const rowStyle = {
-    display: 'flex',
-    gap: 10,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: hover ? '1px solid #d6d6d6' : '1px solid transparent',
-    background: hover ? 'rgba(0,0,0,0.03)' : 'transparent',
-    transition: 'all 120ms ease',
-  }
-
-  const textStyle = {
-    color: 'inherit',
-    textDecoration: 'none',
-    flex: 1,
-    minWidth: 0,
-    display: 'block',
-  }
-
-  const identifierStyle = {
-    fontWeight: 800,
-    textDecoration: 'underline',
-  }
-
-  const buttonStyle = {
-    padding: '8px 10px',
-    borderRadius: 10,
-    border: hover ? '1px solid #cfcfcf' : '1px solid #ddd',
-    background: '#fff',
-    cursor: 'pointer',
-    boxShadow: hover ? '0 2px 10px rgba(0,0,0,0.06)' : 'none',
-    transition: 'all 120ms ease',
-    whiteSpace: 'nowrap',
-  }
-
   return (
     <li
       style={{ lineHeight: 1.35, listStyle: 'none' }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <div style={rowStyle}>
-        {/* Linha inteira clicável (texto + detalhes) */}
-        <Link href={`/unidades/${u.id}`} style={textStyle}>
-          <span style={identifierStyle}>{u.identifier}</span>
+      <div
+        style={{
+          display: 'flex',
+          gap: 10,
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 12px',
+          borderRadius: 12,
+          border: hover ? '1px solid #d6d6d6' : '1px solid transparent',
+          background: hover ? 'rgba(0,0,0,0.03)' : 'transparent',
+          transition: 'all 120ms ease',
+        }}
+      >
+        <Link
+          href={`/unidades/${u.id}`}
+          style={{
+            color: 'inherit',
+            textDecoration: 'none',
+            flex: 1,
+            minWidth: 0,
+            display: 'block',
+          }}
+        >
+          <span style={{ fontWeight: 800, textDecoration: 'underline' }}>{u.identifier}</span>
           {' — '}
           status: <span>{STATUS_LABEL[u.status] || u.status || '—'}</span>
           {' — '}
           progresso: <b>{formatPct(u.progress)}</b> {icon}
         </Link>
 
-        {/* Botão explícito */}
         <Link href={`/unidades/${u.id}`}>
-          <button style={buttonStyle}>Abrir</button>
+          <button
+            style={{
+              padding: '8px 10px',
+              borderRadius: 10,
+              border: hover ? '1px solid #cfcfcf' : '1px solid #ddd',
+              background: '#fff',
+              cursor: 'pointer',
+              boxShadow: hover ? '0 2px 10px rgba(0,0,0,0.06)' : 'none',
+              transition: 'all 120ms ease',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Abrir
+          </button>
         </Link>
       </div>
     </li>
   )
 }
 
-export default function ObrasPage() {
+export default function ObraDetalhePage() {
+  const router = useRouter()
+  const { id } = router.query
+
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
-  const [projects, setProjects] = useState([])
+  const [project, setProject] = useState(null)
+  const [units, setUnits] = useState([])
 
+  // Controles
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [progressFilter, setProgressFilter] = useState('all')
   const [sortBy, setSortBy] = useState('unit_number_asc')
 
+  const projectId = useMemo(() => {
+    if (!id) return null
+    if (Array.isArray(id)) return id[0] || null
+    return String(id)
+  }, [id])
+
   async function loadData() {
+    if (!router.isReady) return
+    if (!projectId) return
+
     setLoading(true)
 
     const { data: authData, error: authErr } = await supabase.auth.getUser()
@@ -111,6 +122,7 @@ export default function ObrasPage() {
     }
     setUserEmail(authData.user.email || '')
 
+    // Busca só 1 obra
     const { data, error } = await supabase
       .from('projects')
       .select(
@@ -130,29 +142,28 @@ export default function ObrasPage() {
         )
       `
       )
-      .order('created_at', { ascending: true })
+      .eq('id', projectId)
+      .maybeSingle()
 
     if (error) {
-      console.error('Erro ao carregar projects/units:', error)
-      setProjects([])
+      console.error('Erro ao carregar obra:', error)
+      setProject(null)
+      setUnits([])
       setLoading(false)
       return
     }
 
-    const normalized = (data || []).map((p) => ({
-      ...p,
-      units: Array.isArray(p.units) ? p.units : [],
-    }))
-
-    setProjects(normalized)
+    setProject(data || null)
+    setUnits(Array.isArray(data?.units) ? data.units : [])
     setLoading(false)
   }
 
   useEffect(() => {
     loadData()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady, projectId])
 
-  const filteredProjects = useMemo(() => {
+  const filteredUnits = useMemo(() => {
     const q = normalize(search)
 
     const matchesStatus = (u) => {
@@ -176,63 +187,63 @@ export default function ObrasPage() {
       return idf.includes(q) || st.includes(q)
     }
 
-    const sortUnits = (units) => {
-      const arr = [...units]
-
+    const sortUnits = (arr) => {
+      const out = [...arr]
       const asNumberOrString = (v) => {
         const n = Number(v)
         return Number.isNaN(n) ? String(v || '') : n
       }
 
       if (sortBy === 'unit_number_asc') {
-        arr.sort((a, b) => (asNumberOrString(a.identifier) > asNumberOrString(b.identifier) ? 1 : -1))
+        out.sort((a, b) => (asNumberOrString(a.identifier) > asNumberOrString(b.identifier) ? 1 : -1))
       } else if (sortBy === 'unit_number_desc') {
-        arr.sort((a, b) => (asNumberOrString(a.identifier) < asNumberOrString(b.identifier) ? 1 : -1))
+        out.sort((a, b) => (asNumberOrString(a.identifier) < asNumberOrString(b.identifier) ? 1 : -1))
       } else if (sortBy === 'progress_desc') {
-        arr.sort((a, b) => Number(b.progress || 0) - Number(a.progress || 0))
+        out.sort((a, b) => Number(b.progress || 0) - Number(a.progress || 0))
       } else if (sortBy === 'progress_asc') {
-        arr.sort((a, b) => Number(a.progress || 0) - Number(b.progress || 0))
+        out.sort((a, b) => Number(a.progress || 0) - Number(b.progress || 0))
       } else if (sortBy === 'status') {
         const rank = { in_progress: 0, pending: 1, done: 2 }
-        arr.sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))
+        out.sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))
       }
-
-      return arr
+      return out
     }
 
-    const result = []
-
-    for (const p of projects) {
-      const unitsFiltered = p.units.filter(matchesStatus).filter(matchesProgress).filter(matchesSearch)
-
-      if (unitsFiltered.length > 0 || (!search && statusFilter === 'all' && progressFilter === 'all')) {
-        result.push({
-          ...p,
-          units: sortUnits(unitsFiltered),
-          __totalUnits: p.units.length,
-        })
-      }
-    }
-
-    return result
-  }, [projects, search, statusFilter, progressFilter, sortBy])
+    return sortUnits(units.filter(matchesStatus).filter(matchesProgress).filter(matchesSearch))
+  }, [units, search, statusFilter, progressFilter, sortBy])
 
   if (loading) {
     return (
       <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-        <h1 style={{ marginBottom: 8 }}>Obras</h1>
+        <h1 style={{ marginBottom: 8 }}>Obra</h1>
         <div>Carregando…</div>
+      </div>
+    )
+  }
+
+  if (!project) {
+    return (
+      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        <h1 style={{ marginBottom: 8 }}>Obra</h1>
+        <div style={{ marginBottom: 12, color: '#444' }}>Obra não encontrada.</div>
+        <Link href="/obras">← Voltar ao painel</Link>
       </div>
     )
   }
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-      <h1 style={{ marginBottom: 6 }}>Obras</h1>
-      <div style={{ color: '#444', marginBottom: 16 }}>
-        Usuário logado: <b>{userEmail}</b>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h1 style={{ marginBottom: 6 }}>{project.name || '(Sem nome)'}</h1>
+          <div style={{ color: '#444', marginBottom: 10 }}>
+            Usuário logado: <b>{userEmail}</b>
+          </div>
+        </div>
+        <Link href="/obras">← Voltar ao painel</Link>
       </div>
 
+      {/* Controles */}
       <div
         style={{
           display: 'grid',
@@ -318,45 +329,22 @@ export default function ObrasPage() {
         </div>
       </div>
 
-      {filteredProjects.length === 0 ? (
-        <div style={{ marginTop: 18, color: '#444' }}>Nenhuma unidade encontrada com esses filtros.</div>
-      ) : (
-        <div style={{ display: 'grid', gap: 14, maxWidth: 900 }}>
-          {filteredProjects.map((p) => {
-            const shown = p.units.length
-            const total = p.__totalUnits ?? p.units.length
-
-            return (
-              <div
-                key={p.id}
-                style={{
-                  background: '#fff',
-                  border: '1px solid #eee',
-                  borderRadius: 14,
-                  padding: 18,
-                  boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
-                }}
-              >
-                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>{p.name || '(Sem nome)'}</div>
-
-                <div style={{ color: '#666', fontSize: 13, marginBottom: 10 }}>
-                  Unidades exibidas: <b>{shown}</b> / {total}
-                </div>
-
-                {p.units.length === 0 ? (
-                  <div style={{ color: '#444' }}>(Sem unidades para exibir com os filtros atuais)</div>
-                ) : (
-                  <ul style={{ margin: 0, padding: 0, display: 'grid', gap: 6 }}>
-                    {p.units.map((u) => (
-                      <UnitRow key={u.id} u={u} />
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )
-          })}
+      {/* Lista de unidades */}
+      <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 14, padding: 18, boxShadow: '0 6px 20px rgba(0,0,0,0.06)', maxWidth: 900 }}>
+        <div style={{ color: '#666', fontSize: 13, marginBottom: 10 }}>
+          Unidades exibidas: <b>{filteredUnits.length}</b> / {units.length}
         </div>
-      )}
+
+        {filteredUnits.length === 0 ? (
+          <div style={{ marginTop: 12, color: '#444' }}>Nenhuma unidade encontrada com esses filtros.</div>
+        ) : (
+          <ul style={{ margin: 0, padding: 0, display: 'grid', gap: 6 }}>
+            {filteredUnits.map((u) => (
+              <UnitRow key={u.id} u={u} />
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   )
 }
