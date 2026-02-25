@@ -18,7 +18,7 @@ export default function Login() {
     setMsg("Enviando link...");
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: `${window.location.origin}/obras` }
+      options: { emailRedirectTo: `${window.location.origin}/login` }
     });
 
     if (error) setMsg("Erro: " + error.message);
