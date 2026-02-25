@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '../lib/supabase'
 
 const STATUS_LABEL = {
@@ -19,7 +20,6 @@ function normalize(str) {
 function formatPct(n) {
   const v = Number(n || 0)
   if (Number.isNaN(v)) return '0%'
-  // Mantém 2 casas só quando precisa
   const s = v % 1 === 0 ? v.toFixed(0) : v.toFixed(2)
   return `${s}%`
 }
@@ -41,14 +41,12 @@ export default function ObrasPage() {
     // 1) Sessão / usuário
     const { data: authData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !authData?.user) {
-      // se não estiver logado, manda para login
       window.location.href = '/login'
       return
     }
     setUserEmail(authData.user.email || '')
 
     // 2) Buscar obras (projects) + unidades (units)
-    // Ajuste: estamos usando units.progress (numérico) e units.status (texto)
     const { data, error } = await supabase
       .from('projects')
       .select(
@@ -77,7 +75,6 @@ export default function ObrasPage() {
       return
     }
 
-    // normaliza units vazias
     const normalized = (data || []).map((p) => ({
       ...p,
       units: Array.isArray(p.units) ? p.units : [],
@@ -111,7 +108,6 @@ export default function ObrasPage() {
 
     const matchesSearch = (u) => {
       if (!q) return true
-      // busca pelo número/identificador da unidade (ex: 401) e também por status
       const idf = normalize(u.identifier)
       const st = normalize(STATUS_LABEL[u.status] || u.status)
       return idf.includes(q) || st.includes(q)
@@ -126,9 +122,9 @@ export default function ObrasPage() {
       }
 
       if (sortBy === 'unit_number_asc') {
-        arr.sort((a, b) => asNumberOrString(a.identifier) > asNumberOrString(b.identifier) ? 1 : -1)
+        arr.sort((a, b) => (asNumberOrString(a.identifier) > asNumberOrString(b.identifier) ? 1 : -1))
       } else if (sortBy === 'unit_number_desc') {
-        arr.sort((a, b) => asNumberOrString(a.identifier) < asNumberOrString(b.identifier) ? 1 : -1)
+        arr.sort((a, b) => (asNumberOrString(a.identifier) < asNumberOrString(b.identifier) ? 1 : -1))
       } else if (sortBy === 'progress_desc') {
         arr.sort((a, b) => Number(b.progress || 0) - Number(a.progress || 0))
       } else if (sortBy === 'progress_asc') {
@@ -144,10 +140,7 @@ export default function ObrasPage() {
     const result = []
 
     for (const p of projects) {
-      const unitsFiltered = p.units
-        .filter(matchesStatus)
-        .filter(matchesProgress)
-        .filter(matchesSearch)
+      const unitsFiltered = p.units.filter(matchesStatus).filter(matchesProgress).filter(matchesSearch)
 
       if (unitsFiltered.length > 0 || (!search && statusFilter === 'all' && progressFilter === 'all')) {
         result.push({
@@ -265,9 +258,7 @@ export default function ObrasPage() {
 
       {/* Lista de obras */}
       {filteredProjects.length === 0 ? (
-        <div style={{ marginTop: 18, color: '#444' }}>
-          Nenhuma unidade encontrada com esses filtros.
-        </div>
+        <div style={{ marginTop: 18, color: '#444' }}>Nenhuma unidade encontrada com esses filtros.</div>
       ) : (
         <div style={{ display: 'grid', gap: 14, maxWidth: 900 }}>
           {filteredProjects.map((p) => {
@@ -285,28 +276,73 @@ export default function ObrasPage() {
                   boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
                 }}
               >
-                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>
-                  {p.name || '(Sem nome)'}
-                </div>
+                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>{p.name || '(Sem nome)'}</div>
 
                 <div style={{ color: '#666', fontSize: 13, marginBottom: 10 }}>
                   Unidades exibidas: <b>{shown}</b> / {total}
                 </div>
 
                 {p.units.length === 0 ? (
-                  <div style={{ color: '#444' }}>
-                    (Sem unidades para exibir com os filtros atuais)
-                  </div>
+                  <div style={{ color: '#444' }}>(Sem unidades para exibir com os filtros atuais)</div>
                 ) : (
                   <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 6 }}>
-                    {p.units.map((u) => (
-                      <li key={u.id} style={{ lineHeight: 1.35 }}>
-                        <b>{u.identifier}</b>{' '}
-                        — status: <span>{STATUS_LABEL[u.status] || u.status || '—'}</span>{' '}
-                        — progresso: <b>{formatPct(u.progress)}</b>{' '}
-                        {Number(u.progress || 0) >= 100 ? '✅' : Number(u.progress || 0) > 0 ? '🟡' : '⏳'}
-                      </li>
-                    ))}
+                    {p.units.map((u) => {
+                      const pct = Number(u.progress || 0)
+                      const icon = pct >= 100 ? '✅' : pct > 0 ? '🟡' : '⏳'
+
+                      return (
+                        <li
+                          key={u.id}
+                          style={{
+                            lineHeight: 1.35,
+                            display: 'flex',
+                            gap: 10,
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          {/* Área clicável (texto) */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <Link
+                              href={`/unidades/${u.id}`}
+                              style={{
+                                color: 'inherit',
+                                textDecoration: 'none',
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontWeight: 800,
+                                  textDecoration: 'underline',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {u.identifier}
+                              </span>
+                              {' — '}
+                              status: <span>{STATUS_LABEL[u.status] || u.status || '—'}</span>
+                              {' — '}
+                              progresso: <b>{formatPct(u.progress)}</b> {icon}
+                            </Link>
+                          </div>
+
+                          {/* Botão explícito (fica muito claro pro usuário) */}
+                          <Link href={`/unidades/${u.id}`}>
+                            <button
+                              style={{
+                                padding: '8px 10px',
+                                borderRadius: 10,
+                                border: '1px solid #ddd',
+                                background: '#fff',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Abrir
+                            </button>
+                          </Link>
+                        </li>
+                      )
+                    })}
                   </ul>
                 )}
               </div>
