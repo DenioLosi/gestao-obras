@@ -1,183 +1,319 @@
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/router";
-import { supabase } from "../lib/supabase";
+import { useEffect, useMemo, useState } from 'react'
+import { supabase } from '../lib/supabase'
+
+const STATUS_LABEL = {
+  pending: 'pendente',
+  in_progress: 'em andamento',
+  done: 'concluída',
+}
+
+function normalize(str) {
+  return (str || '')
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+function formatPct(n) {
+  const v = Number(n || 0)
+  if (Number.isNaN(v)) return '0%'
+  // Mantém 2 casas só quando precisa
+  const s = v % 1 === 0 ? v.toFixed(0) : v.toFixed(2)
+  return `${s}%`
+}
 
 export default function ObrasPage() {
-  const router = useRouter();
+  const [loading, setLoading] = useState(true)
+  const [userEmail, setUserEmail] = useState('')
+  const [projects, setProjects] = useState([])
 
-  const [userEmail, setUserEmail] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [projects, setProjects] = useState([]);
-  const [unitsByProject, setUnitsByProject] = useState({});
-  const [error, setError] = useState(null);
+  // Controles da tela (B)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all') // all | pending | in_progress | done
+  const [progressFilter, setProgressFilter] = useState('all') // all | 0 | 1_99 | 100
+  const [sortBy, setSortBy] = useState('unit_number_asc') // unit_number_asc | unit_number_desc | progress_desc | progress_asc | status
 
-  // helper pra ordenar unidades como número quando possível
-  const sortUnitIdentifier = (a, b) => {
-    const na = Number(a.identifier);
-    const nb = Number(b.identifier);
-    const aIsNum = Number.isFinite(na);
-    const bIsNum = Number.isFinite(nb);
+  async function loadData() {
+    setLoading(true)
 
-    if (aIsNum && bIsNum) return na - nb;
-    if (aIsNum && !bIsNum) return -1;
-    if (!aIsNum && bIsNum) return 1;
-    return String(a.identifier).localeCompare(String(b.identifier));
-  };
+    // 1) Sessão / usuário
+    const { data: authData, error: authErr } = await supabase.auth.getUser()
+    if (authErr || !authData?.user) {
+      // se não estiver logado, manda para login
+      window.location.href = '/login'
+      return
+    }
+    setUserEmail(authData.user.email || '')
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      setError(null);
+    // 2) Buscar obras (projects) + unidades (units)
+    // Ajuste: estamos usando units.progress (numérico) e units.status (texto)
+    const { data, error } = await supabase
+      .from('projects')
+      .select(
+        `
+        id,
+        name,
+        description,
+        created_at,
+        units (
+          id,
+          project_id,
+          identifier,
+          type,
+          status,
+          progress,
+          created_at
+        )
+      `
+      )
+      .order('created_at', { ascending: true })
 
-      // 1) garantir que está logado
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError) {
-        setError(sessionError.message);
-        setLoading(false);
-        return;
-      }
-
-      const session = sessionData?.session;
-      if (!session) {
-        router.replace("/login");
-        return;
-      }
-
-      setUserEmail(session.user?.email ?? "usuário");
-
-      // 2) buscar obras
-      const { data: projectsData, error: projectsError } = await supabase
-        .from("projects")
-        .select("id, name, description, created_at")
-        .order("created_at", { ascending: false });
-
-      if (projectsError) {
-        setError(projectsError.message);
-        setLoading(false);
-        return;
-      }
-
-      setProjects(projectsData || []);
-
-      // 3) buscar unidades de todas as obras (sem filtrar progress/status!)
-      const projectIds = (projectsData || []).map((p) => p.id);
-
-      if (projectIds.length === 0) {
-        setUnitsByProject({});
-        setLoading(false);
-        return;
-      }
-
-      const { data: unitsData, error: unitsError } = await supabase
-        .from("units")
-        .select("id, project_id, identifier, type, status, progress, created_at")
-        .in("project_id", projectIds);
-
-      if (unitsError) {
-        setError(unitsError.message);
-        setLoading(false);
-        return;
-      }
-
-      // 4) agrupar por obra
-      const grouped = {};
-      for (const u of unitsData || []) {
-        if (!grouped[u.project_id]) grouped[u.project_id] = [];
-        grouped[u.project_id].push(u);
-      }
-
-      // ordenar unidades dentro de cada obra
-      for (const pid of Object.keys(grouped)) {
-        grouped[pid].sort(sortUnitIdentifier);
-      }
-
-      setUnitsByProject(grouped);
-      setLoading(false);
+    if (error) {
+      console.error('Erro ao carregar projects/units:', error)
+      setProjects([])
+      setLoading(false)
+      return
     }
 
-    load();
-  }, [router]);
+    // normaliza units vazias
+    const normalized = (data || []).map((p) => ({
+      ...p,
+      units: Array.isArray(p.units) ? p.units : [],
+    }))
 
-  const hasProjects = projects.length > 0;
+    setProjects(normalized)
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    loadData()
+  }, [])
+
+  // 3) Aplicar filtros/busca/ordenação (client-side)
+  const filteredProjects = useMemo(() => {
+    const q = normalize(search)
+
+    const matchesStatus = (u) => {
+      if (statusFilter === 'all') return true
+      return (u.status || '') === statusFilter
+    }
+
+    const matchesProgress = (u) => {
+      const p = Number(u.progress || 0)
+      if (progressFilter === 'all') return true
+      if (progressFilter === '0') return p === 0
+      if (progressFilter === '1_99') return p > 0 && p < 100
+      if (progressFilter === '100') return p >= 100
+      return true
+    }
+
+    const matchesSearch = (u) => {
+      if (!q) return true
+      // busca pelo número/identificador da unidade (ex: 401) e também por status
+      const idf = normalize(u.identifier)
+      const st = normalize(STATUS_LABEL[u.status] || u.status)
+      return idf.includes(q) || st.includes(q)
+    }
+
+    const sortUnits = (units) => {
+      const arr = [...units]
+
+      const asNumberOrString = (v) => {
+        const n = Number(v)
+        return Number.isNaN(n) ? String(v || '') : n
+      }
+
+      if (sortBy === 'unit_number_asc') {
+        arr.sort((a, b) => asNumberOrString(a.identifier) > asNumberOrString(b.identifier) ? 1 : -1)
+      } else if (sortBy === 'unit_number_desc') {
+        arr.sort((a, b) => asNumberOrString(a.identifier) < asNumberOrString(b.identifier) ? 1 : -1)
+      } else if (sortBy === 'progress_desc') {
+        arr.sort((a, b) => Number(b.progress || 0) - Number(a.progress || 0))
+      } else if (sortBy === 'progress_asc') {
+        arr.sort((a, b) => Number(a.progress || 0) - Number(b.progress || 0))
+      } else if (sortBy === 'status') {
+        const rank = { in_progress: 0, pending: 1, done: 2 }
+        arr.sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9))
+      }
+
+      return arr
+    }
+
+    const result = []
+
+    for (const p of projects) {
+      const unitsFiltered = p.units
+        .filter(matchesStatus)
+        .filter(matchesProgress)
+        .filter(matchesSearch)
+
+      if (unitsFiltered.length > 0 || (!search && statusFilter === 'all' && progressFilter === 'all')) {
+        result.push({
+          ...p,
+          units: sortUnits(unitsFiltered),
+          __totalUnits: p.units.length,
+        })
+      }
+    }
+
+    return result
+  }, [projects, search, statusFilter, progressFilter, sortBy])
+
+  if (loading) {
+    return (
+      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        <h1 style={{ marginBottom: 8 }}>Obras</h1>
+        <div>Carregando…</div>
+      </div>
+    )
+  }
 
   return (
-    <div style={{ padding: 24, fontFamily: "Arial, sans-serif" }}>
-      <h1 style={{ marginBottom: 8 }}>Obras</h1>
+    <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+      <h1 style={{ marginBottom: 6 }}>Obras</h1>
+      <div style={{ color: '#444', marginBottom: 16 }}>
+        Usuário logado: <b>{userEmail}</b>
+      </div>
 
-      {userEmail && (
-        <p style={{ marginTop: 0, color: "#444" }}>
-          Usuário logado: <b>{userEmail}</b>
-        </p>
-      )}
-
-      {loading && <p>Carregando…</p>}
-
-      {!loading && error && (
-        <div style={{ padding: 12, border: "1px solid #f5c2c7", background: "#f8d7da", color: "#842029" }}>
-          <b>Erro:</b> {error}
+      {/* Barra de controles (busca + filtros + ordenação) */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 220px 220px 260px',
+          gap: 12,
+          alignItems: 'end',
+          marginBottom: 18,
+          maxWidth: 1100,
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>Buscar unidade</div>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Ex: 401, 502, pendente..."
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: 10,
+              border: '1px solid #ddd',
+              outline: 'none',
+            }}
+          />
         </div>
-      )}
 
-      {!loading && !error && !hasProjects && <p>Nenhuma obra encontrada.</p>}
+        <div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>Status</div>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: 10,
+              border: '1px solid #ddd',
+            }}
+          >
+            <option value="all">Todos</option>
+            <option value="pending">Pendente</option>
+            <option value="in_progress">Em andamento</option>
+            <option value="done">Concluída</option>
+          </select>
+        </div>
 
-      {!loading && !error && hasProjects && (
-        <div style={{ display: "grid", gap: 16, maxWidth: 720 }}>
-          {projects.map((p) => {
-            const units = unitsByProject[p.id] || [];
+        <div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>Progresso</div>
+          <select
+            value={progressFilter}
+            onChange={(e) => setProgressFilter(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: 10,
+              border: '1px solid #ddd',
+            }}
+          >
+            <option value="all">Todos</option>
+            <option value="0">0%</option>
+            <option value="1_99">1% a 99%</option>
+            <option value="100">100%</option>
+          </select>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>Ordenar unidades</div>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: 10,
+              border: '1px solid #ddd',
+            }}
+          >
+            <option value="unit_number_asc">Número (crescente)</option>
+            <option value="unit_number_desc">Número (decrescente)</option>
+            <option value="progress_desc">Progresso (maior → menor)</option>
+            <option value="progress_asc">Progresso (menor → maior)</option>
+            <option value="status">Status (andamento → pendente → concluída)</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Lista de obras */}
+      {filteredProjects.length === 0 ? (
+        <div style={{ marginTop: 18, color: '#444' }}>
+          Nenhuma unidade encontrada com esses filtros.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 14, maxWidth: 900 }}>
+          {filteredProjects.map((p) => {
+            const shown = p.units.length
+            const total = p.__totalUnits ?? p.units.length
 
             return (
               <div
                 key={p.id}
                 style={{
-                  border: "1px solid #ddd",
-                  borderRadius: 10,
-                  padding: 16,
-                  background: "white",
-                  boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
+                  background: '#fff',
+                  border: '1px solid #eee',
+                  borderRadius: 14,
+                  padding: 18,
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
                 }}
               >
-                <h2 style={{ margin: "0 0 6px 0" }}>{p.name}</h2>
-
-                {p.description ? (
-                  <p style={{ margin: "0 0 12px 0", color: "#555" }}>{p.description}</p>
-                ) : (
-                  <p style={{ margin: "0 0 12px 0", color: "#777" }}>
-                    <i>Sem descrição</i>
-                  </p>
-                )}
-
-                <div style={{ marginTop: 8 }}>
-                  <b>Unidades ({units.length})</b>
+                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>
+                  {p.name || '(Sem nome)'}
                 </div>
 
-                {units.length === 0 ? (
-                  <p style={{ margin: "8px 0 0 0", color: "#777" }}>
-                    Nenhuma unidade cadastrada para esta obra.
-                  </p>
-                ) : (
-                  <ul style={{ margin: "10px 0 0 0", paddingLeft: 18 }}>
-                    {units.map((u) => {
-                      const prog = Number(u.progress || 0);
-                      const started = prog > 0 || u.status !== "pending";
+                <div style={{ color: '#666', fontSize: 13, marginBottom: 10 }}>
+                  Unidades exibidas: <b>{shown}</b> / {total}
+                </div>
 
-                      return (
-                        <li key={u.id} style={{ marginBottom: 6 }}>
-                          <span style={{ fontWeight: 700 }}>{u.identifier}</span>{" "}
-                          <span style={{ color: "#666" }}>
-                            — status: {u.status || "pending"}
-                            {typeof u.progress !== "undefined" && u.progress !== null ? ` — progresso: ${prog}%` : ""}
-                          </span>
-                          {started ? <span style={{ marginLeft: 8 }}>✅</span> : <span style={{ marginLeft: 8 }}>⏳</span>}
-                        </li>
-                      );
-                    })}
+                {p.units.length === 0 ? (
+                  <div style={{ color: '#444' }}>
+                    (Sem unidades para exibir com os filtros atuais)
+                  </div>
+                ) : (
+                  <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 6 }}>
+                    {p.units.map((u) => (
+                      <li key={u.id} style={{ lineHeight: 1.35 }}>
+                        <b>{u.identifier}</b>{' '}
+                        — status: <span>{STATUS_LABEL[u.status] || u.status || '—'}</span>{' '}
+                        — progresso: <b>{formatPct(u.progress)}</b>{' '}
+                        {Number(u.progress || 0) >= 100 ? '✅' : Number(u.progress || 0) > 0 ? '🟡' : '⏳'}
+                      </li>
+                    ))}
                   </ul>
                 )}
               </div>
-            );
+            )
           })}
         </div>
       )}
     </div>
-  );
+  )
 }
