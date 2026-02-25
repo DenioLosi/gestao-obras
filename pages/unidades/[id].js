@@ -5,7 +5,14 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  }
 );
 
 function clampProgress(v) {
@@ -23,6 +30,13 @@ export default function UnidadeDetalhePage() {
   const [unitStages, setUnitStages] = useState([]);
   const [savingStageId, setSavingStageId] = useState(null);
 
+  // garante que o id é string (Next às vezes entrega array)
+  const unitId = useMemo(() => {
+    if (!id) return null;
+    if (Array.isArray(id)) return id[0] || null;
+    return String(id);
+  }, [id]);
+
   const unitTitle = useMemo(() => {
     if (!unit) return "Unidade";
     const label = unit.number ?? unit.name ?? unit.id?.slice(0, 8);
@@ -39,35 +53,44 @@ export default function UnidadeDetalhePage() {
   }
 
   async function load() {
-    if (!id) return;
+    if (!router.isReady) return;
+    if (!unitId) return;
+
     setLoading(true);
 
     const ok = await requireAuth();
     if (!ok) return;
 
-    // 1) Busca unidade (SEM join em projects)
+    // ✅ 1) unidade
     const unitRes = await supabase
       .from("units")
       .select("id, number, name, progress, status, project_id")
-      .eq("id", id)
-      .single();
+      .eq("id", unitId)
+      .maybeSingle(); // <- evita 400 do single quando algo sai do esperado
 
     if (unitRes.error) {
       console.error("Erro unitRes:", unitRes.error);
-      alert("Erro ao carregar unidade.");
+      alert(`Erro ao carregar unidade: ${unitRes.error.message}`);
       setLoading(false);
       return;
     }
 
-    // 2) Busca unit_stages + stages
+    if (!unitRes.data) {
+      setUnit(null);
+      setUnitStages([]);
+      setLoading(false);
+      return;
+    }
+
+    // ✅ 2) etapas da unidade
     const stagesRes = await supabase
       .from("unit_stages")
       .select("id, unit_id, stage_id, progress, status, notes, stages(id, name, order_index)")
-      .eq("unit_id", id);
+      .eq("unit_id", unitId);
 
     if (stagesRes.error) {
       console.error("Erro stagesRes:", stagesRes.error);
-      alert("Erro ao carregar etapas.");
+      alert(`Erro ao carregar etapas: ${stagesRes.error.message}`);
       setLoading(false);
       return;
     }
@@ -89,21 +112,19 @@ export default function UnidadeDetalhePage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [router.isReady, unitId]);
 
   async function updateStage(unitStageId, patch, logAction, oldValue, newValue) {
     setSavingStageId(unitStageId);
 
-    // update em unit_stages
     const upd = await supabase.from("unit_stages").update(patch).eq("id", unitStageId);
     if (upd.error) {
       console.error("Erro upd:", upd.error);
-      alert("Erro ao salvar etapa.");
+      alert(`Erro ao salvar etapa: ${upd.error.message}`);
       setSavingStageId(null);
       return;
     }
 
-    // cria log
     const { data: sessionData } = await supabase.auth.getSession();
     const userId = sessionData?.session?.user?.id;
 
@@ -115,24 +136,22 @@ export default function UnidadeDetalhePage() {
         old_value: oldValue ?? null,
         new_value: newValue ?? null,
       });
-      if (ins.error) {
-        console.error("Falha ao inserir log:", ins.error);
-      }
+
+      if (ins.error) console.error("Falha ao inserir log:", ins.error);
     }
 
-    // atualiza UI local
     setUnitStages((prev) =>
       prev.map((r) => (r.id === unitStageId ? { ...r, ...patch } : r))
     );
 
-    // recarrega unidade (pra pegar progress/status recalculado pelos triggers)
+    // recarrega unidade pra pegar progress/status do trigger
     const unitRes = await supabase
       .from("units")
       .select("id, number, name, progress, status, project_id")
-      .eq("id", id)
-      .single();
+      .eq("id", unitId)
+      .maybeSingle();
 
-    if (!unitRes.error) setUnit(unitRes.data);
+    if (!unitRes.error && unitRes.data) setUnit(unitRes.data);
 
     setSavingStageId(null);
   }
@@ -183,14 +202,7 @@ export default function UnidadeDetalhePage() {
 
   return (
     <div style={{ padding: 16, maxWidth: 1000, margin: "0 auto" }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          alignItems: "center",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <div style={{ fontSize: 12, opacity: 0.7 }}>
             Obra (project_id): {unit.project_id ?? "-"}
@@ -199,25 +211,10 @@ export default function UnidadeDetalhePage() {
           <h1 style={{ margin: "6px 0" }}>{unitTitle}</h1>
 
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            <span
-              style={{
-                fontSize: 12,
-                padding: "4px 8px",
-                border: "1px solid #ddd",
-                borderRadius: 999,
-              }}
-            >
+            <span style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #ddd", borderRadius: 999 }}>
               Status: {unit.status || "-"}
             </span>
-
-            <span
-              style={{
-                fontSize: 12,
-                padding: "4px 8px",
-                border: "1px solid #ddd",
-                borderRadius: 999,
-              }}
-            >
+            <span style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #ddd", borderRadius: 999 }}>
               Progresso: {Math.round(unit.progress ?? 0)}%
             </span>
           </div>
@@ -239,22 +236,8 @@ export default function UnidadeDetalhePage() {
           const disabled = savingStageId === row.id;
 
           return (
-            <div
-              key={row.id}
-              style={{
-                border: "1px solid #e5e5e5",
-                borderRadius: 12,
-                padding: 12,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  alignItems: "center",
-                }}
-              >
+            <div key={row.id} style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
                 <div>
                   <div style={{ fontWeight: 600 }}>{stageName}</div>
                   <div style={{ fontSize: 12, opacity: 0.75 }}>
@@ -266,10 +249,7 @@ export default function UnidadeDetalhePage() {
                   <button disabled={disabled} onClick={() => setStageQuickStatus(row, "pending")}>
                     Pendente
                   </button>
-                  <button
-                    disabled={disabled}
-                    onClick={() => setStageQuickStatus(row, "in_progress")}
-                  >
+                  <button disabled={disabled} onClick={() => setStageQuickStatus(row, "in_progress")}>
                     Em andamento
                   </button>
                   <button disabled={disabled} onClick={() => setStageQuickStatus(row, "done")}>
@@ -279,37 +259,22 @@ export default function UnidadeDetalhePage() {
               </div>
 
               <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.8 }}>
-                  Observações
-                </div>
-
+                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.8 }}>Observações</div>
                 <textarea
                   defaultValue={row.notes || ""}
                   placeholder="Escreva observações desta etapa…"
                   rows={3}
-                  style={{
-                    width: "100%",
-                    padding: 10,
-                    borderRadius: 10,
-                    border: "1px solid #ddd",
-                  }}
+                  style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
                   onBlur={(e) => {
                     const value = e.target.value;
                     if ((value || "") !== (row.notes || "")) saveNotes(row, value);
                   }}
                   disabled={disabled}
                 />
-
-                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>
-                  (Salva ao sair do campo)
-                </div>
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>(Salva ao sair do campo)</div>
               </div>
 
-              {disabled && (
-                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-                  Salvando…
-                </div>
-              )}
+              {disabled && <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>Salvando…</div>}
             </div>
           );
         })}
