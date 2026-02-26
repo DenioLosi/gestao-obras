@@ -8,6 +8,10 @@ const STATUS_LABEL = {
   done: 'concluída',
 }
 
+function safeStr(v) {
+  return (v ?? '').toString()
+}
+
 function formatPct(n) {
   const v = Number(n || 0)
   if (Number.isNaN(v)) return '0%'
@@ -25,8 +29,63 @@ function includesText(v, q) {
   return (v ?? '').toString().toLowerCase().includes(q)
 }
 
-function safeStr(v) {
-  return (v ?? '').toString()
+function getTime(v) {
+  const t = v?.created_at ? new Date(v.created_at).getTime() : 0
+  return Number.isNaN(t) ? 0 : t
+}
+
+function Modal({ open, title, children, onClose }) {
+  if (!open) return null
+
+  return (
+    <div
+      onMouseDown={(e) => {
+        // clique fora fecha
+        if (e.target === e.currentTarget) onClose?.()
+      }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        zIndex: 1000,
+      }}
+    >
+      <div
+        style={{
+          width: 'min(720px, 100%)',
+          background: '#fff',
+          borderRadius: 16,
+          border: '1px solid #eee',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+          padding: 16,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
+          <button
+            onClick={onClose}
+            style={{
+              border: '1px solid #ddd',
+              background: '#fff',
+              borderRadius: 12,
+              padding: '8px 10px',
+              cursor: 'pointer',
+              fontWeight: 800,
+            }}
+            title="Fechar"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12 }}>{children}</div>
+      </div>
+    </div>
+  )
 }
 
 export default function ObrasPainelPage() {
@@ -34,12 +93,19 @@ export default function ObrasPainelPage() {
   const [userEmail, setUserEmail] = useState('')
   const [projects, setProjects] = useState([])
 
-  // ✅ busca
+  // busca + ordenação
   const [search, setSearch] = useState('')
-
-  // ✅ ordenação
   // progress_desc | progress_asc | newest | oldest | name_asc | inprogress_desc | pending_desc
   const [sortBy, setSortBy] = useState('progress_desc')
+
+  // ✅ CRUD modal state
+  const [modalOpen, setModalOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [editProjectId, setEditProjectId] = useState(null)
+
+  // campos do form (compatível com schema atual: name/description)
+  const [formName, setFormName] = useState('')
+  const [formDescription, setFormDescription] = useState('')
 
   async function loadData() {
     setLoading(true)
@@ -91,7 +157,7 @@ export default function ObrasPainelPage() {
     loadData()
   }, [])
 
-  // ✅ cards (com created_at pra ordenação por recência)
+  // cards
   const cards = useMemo(() => {
     return projects.map((p) => {
       const total = p.units.length
@@ -119,11 +185,6 @@ export default function ObrasPainelPage() {
         name: p.name || '(Sem nome)',
         description: p.description || '',
         created_at: p.created_at || null,
-
-        // ✅ campos futuros (se você criar depois, já funciona na busca)
-        client_name: p.client_name || '',
-        city: p.city || '',
-
         totalUnits: total,
         avgProgress: avg,
         counts,
@@ -131,30 +192,16 @@ export default function ObrasPainelPage() {
     })
   }, [projects])
 
-  // ✅ filtra + ordena
+  // filtra + ordena
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()
 
-    // 1) filtra
     let list = !q
       ? [...cards]
-      : (cards || []).filter((c) => {
-          return (
-            includesText(c?.name, q) ||
-            includesText(c?.description, q) ||
-            includesText(c?.client_name, q) ||
-            includesText(c?.city, q)
-          )
-        })
-
-    // 2) ordena
-    const getTime = (v) => {
-      const t = v?.created_at ? new Date(v.created_at).getTime() : 0
-      return Number.isNaN(t) ? 0 : t
-    }
+      : (cards || []).filter((c) => includesText(c?.name, q) || includesText(c?.description, q))
 
     list.sort((a, b) => {
-      // 🔥 critério principal
+      // critério principal
       if (sortBy === 'progress_desc') return clampPct(b.avgProgress) - clampPct(a.avgProgress)
       if (sortBy === 'progress_asc') return clampPct(a.avgProgress) - clampPct(b.avgProgress)
       if (sortBy === 'inprogress_desc') return (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0)
@@ -162,20 +209,97 @@ export default function ObrasPainelPage() {
       if (sortBy === 'newest') return getTime(b) - getTime(a)
       if (sortBy === 'oldest') return getTime(a) - getTime(b)
       if (sortBy === 'name_asc') return safeStr(a?.name).localeCompare(safeStr(b?.name))
-
       return 0
     })
 
-    // ✅ desempate consistente (para não ficar “pulando”)
-    list.sort((a, b) => {
-      // quando empata no critério principal, desempata por nome
-      const an = safeStr(a?.name)
-      const bn = safeStr(b?.name)
-      return an.localeCompare(bn)
-    })
+    // desempate consistente por nome (quando empata no critério principal)
+    list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name)))
 
     return list
   }, [cards, search, sortBy])
+
+  // ===== CRUD helpers =====
+
+  function openCreateModal() {
+    setEditProjectId(null)
+    setFormName('')
+    setFormDescription('')
+    setModalOpen(true)
+  }
+
+  function openEditModal(card) {
+    setEditProjectId(card.id)
+    setFormName(card.name === '(Sem nome)' ? '' : safeStr(card.name))
+    setFormDescription(safeStr(card.description))
+    setModalOpen(true)
+  }
+
+  function closeModal() {
+    if (saving) return
+    setModalOpen(false)
+  }
+
+  async function saveProject() {
+    const name = safeStr(formName).trim()
+    const description = safeStr(formDescription).trim()
+
+    if (!name) {
+      alert('Informe o nome da obra.')
+      return
+    }
+
+    try {
+      setSaving(true)
+
+      if (editProjectId) {
+        // EDITAR
+        const { error } = await supabase
+          .from('projects')
+          .update({ name, description })
+          .eq('id', editProjectId)
+
+        if (error) {
+          alert(`Erro ao editar obra: ${error.message}`)
+          return
+        }
+      } else {
+        // CRIAR
+        const { error } = await supabase.from('projects').insert({ name, description })
+        if (error) {
+          alert(`Erro ao criar obra: ${error.message}`)
+          return
+        }
+      }
+
+      setModalOpen(false)
+      await loadData()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteProject(card) {
+    const ok = window.confirm(
+      `Excluir a obra "${card.name}"?\n\nATENÇÃO: se existirem unidades vinculadas, o banco pode bloquear (ou apagar junto, dependendo do seu schema).`
+    )
+    if (!ok) return
+
+    try {
+      setSaving(true)
+
+      const { error } = await supabase.from('projects').delete().eq('id', card.id)
+      if (error) {
+        alert(`Erro ao excluir obra: ${error.message}`)
+        return
+      }
+
+      await loadData()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ===== UI =====
 
   if (loading) {
     return (
@@ -188,9 +312,29 @@ export default function ObrasPainelPage() {
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-      <h1 style={{ marginBottom: 6 }}>Obras</h1>
-      <div style={{ color: '#444', marginBottom: 12 }}>
-        Usuário logado: <b>{userEmail}</b>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ marginBottom: 6 }}>Obras</h1>
+          <div style={{ color: '#444', marginBottom: 12 }}>
+            Usuário logado: <b>{userEmail}</b>
+          </div>
+        </div>
+
+        <button
+          onClick={openCreateModal}
+          style={{
+            padding: '10px 12px',
+            borderRadius: 12,
+            border: '1px solid #ddd',
+            background: '#111',
+            color: '#fff',
+            cursor: 'pointer',
+            fontWeight: 800,
+            height: 'fit-content',
+          }}
+        >
+          + Nova obra
+        </button>
       </div>
 
       {/* ✅ BUSCA + ORDENAÇÃO */}
@@ -198,7 +342,7 @@ export default function ObrasPainelPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por obra, cliente, cidade..."
+          placeholder="Buscar por obra..."
           style={{
             width: 'min(520px, 100%)',
             padding: '10px 12px',
@@ -290,17 +434,36 @@ export default function ObrasPainelPage() {
                     ) : null}
                   </div>
 
-                  <div
-                    style={{
-                      fontSize: 12,
-                      padding: '6px 10px',
-                      borderRadius: 999,
-                      border: '1px solid #ddd',
-                      height: 'fit-content',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {c.totalUnits} unidades
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        padding: '6px 10px',
+                        borderRadius: 999,
+                        border: '1px solid #ddd',
+                        height: 'fit-content',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {c.totalUnits} unidades
+                    </div>
+
+                    {/* ✅ menu rápido (editar/excluir) */}
+                    <button
+                      onClick={() => openEditModal(c)}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 12,
+                        border: '1px solid #ddd',
+                        background: '#fff',
+                        cursor: 'pointer',
+                        fontWeight: 800,
+                        height: 'fit-content',
+                      }}
+                      title="Editar obra"
+                    >
+                      ⚙️
+                    </button>
                   </div>
                 </div>
 
@@ -366,6 +529,23 @@ export default function ObrasPainelPage() {
                     </button>
                   </Link>
 
+                  <button
+                    onClick={() => deleteProject(c)}
+                    disabled={saving}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      cursor: saving ? 'not-allowed' : 'pointer',
+                      color: '#b00020',
+                      fontWeight: 800,
+                    }}
+                    title="Excluir obra"
+                  >
+                    Excluir
+                  </button>
+
                   <Link href={`/obras/${c.id}/estoque`} style={{ textDecoration: 'none' }}>
                     <button
                       style={{
@@ -405,6 +585,82 @@ export default function ObrasPainelPage() {
           })}
         </div>
       )}
+
+      {/* ✅ MODAL (CRIAR/EDITAR) */}
+      <Modal
+        open={modalOpen}
+        title={editProjectId ? 'Editar obra' : 'Nova obra'}
+        onClose={closeModal}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, color: '#444', fontWeight: 800 }}>Nome da obra *</div>
+            <input
+              value={formName}
+              onChange={(e) => setFormName(e.target.value)}
+              placeholder="Ex: Edifício Solar / Residencial X"
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+              }}
+              disabled={saving}
+            />
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, color: '#444', fontWeight: 800 }}>Descrição</div>
+            <textarea
+              value={formDescription}
+              onChange={(e) => setFormDescription(e.target.value)}
+              placeholder="Ex: 93 piscinas • Goiânia • Cliente XPTO"
+              style={{
+                minHeight: 110,
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+                resize: 'vertical',
+              }}
+              disabled={saving}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 6 }}>
+            <button
+              onClick={closeModal}
+              disabled={saving}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontWeight: 800,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              onClick={saveProject}
+              disabled={saving}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {saving ? 'Salvando…' : editProjectId ? 'Salvar alterações' : 'Criar obra'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }
