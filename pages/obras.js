@@ -30,8 +30,12 @@ export default function ObrasPainelPage() {
   const [userEmail, setUserEmail] = useState('')
   const [projects, setProjects] = useState([])
 
-  // ✅ novo: busca
+  // ✅ busca
   const [search, setSearch] = useState('')
+
+  // ✅ ordenação
+  // progress_desc | progress_asc | newest | oldest | name_asc
+  const [sortBy, setSortBy] = useState('progress_desc')
 
   async function loadData() {
     setLoading(true)
@@ -83,7 +87,7 @@ export default function ObrasPainelPage() {
     loadData()
   }, [])
 
-  // ✅ cards (igual ao seu)
+  // ✅ cards (com created_at pra ordenação por recência)
   const cards = useMemo(() => {
     return projects.map((p) => {
       const total = p.units.length
@@ -110,9 +114,12 @@ export default function ObrasPainelPage() {
         id: p.id,
         name: p.name || '(Sem nome)',
         description: p.description || '',
+        created_at: p.created_at || null,
+
         // ✅ campos futuros (se você criar depois, já funciona na busca)
         client_name: p.client_name || '',
         city: p.city || '',
+
         totalUnits: total,
         avgProgress: avg,
         counts,
@@ -120,20 +127,53 @@ export default function ObrasPainelPage() {
     })
   }, [projects])
 
-  // ✅ novo: filtra cards pelo search
+  // ✅ filtra + ordena
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return cards
 
-    return (cards || []).filter((c) => {
-      return (
-        includesText(c?.name, q) ||
-        includesText(c?.description, q) ||
-        includesText(c?.client_name, q) ||
-        includesText(c?.city, q)
-      )
+    // 1) filtra
+    let list = !q
+      ? [...cards]
+      : (cards || []).filter((c) => {
+          return (
+            includesText(c?.name, q) ||
+            includesText(c?.description, q) ||
+            includesText(c?.client_name, q) ||
+            includesText(c?.city, q)
+          )
+        })
+
+    // 2) ordena
+    const getTime = (v) => {
+      const t = v?.created_at ? new Date(v.created_at).getTime() : 0
+      return Number.isNaN(t) ? 0 : t
+    }
+
+    list.sort((a, b) => {
+      if (sortBy === 'progress_desc') {
+        return clampPct(b.avgProgress) - clampPct(a.avgProgress)
+      }
+      if (sortBy === 'progress_asc') {
+        return clampPct(a.avgProgress) - clampPct(b.avgProgress)
+      }
+      if (sortBy === 'newest') {
+        return getTime(b) - getTime(a)
+      }
+      if (sortBy === 'oldest') {
+        return getTime(a) - getTime(b)
+      }
+      if (sortBy === 'name_asc') {
+        return safeStr(a?.name).localeCompare(safeStr(b?.name))
+      }
+      return 0
     })
-  }, [cards, search])
+
+    return list
+  }, [cards, search, sortBy])
+
+  function safeStr(v) {
+    return (v ?? '').toString()
+  }
 
   if (loading) {
     return (
@@ -151,7 +191,7 @@ export default function ObrasPainelPage() {
         Usuário logado: <b>{userEmail}</b>
       </div>
 
-      {/* ✅ BUSCA */}
+      {/* ✅ BUSCA + ORDENAÇÃO */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
         <input
           value={search}
@@ -165,6 +205,26 @@ export default function ObrasPainelPage() {
             outline: 'none',
           }}
         />
+
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          style={{
+            padding: '10px 12px',
+            borderRadius: 12,
+            border: '1px solid #ddd',
+            background: '#fff',
+            cursor: 'pointer',
+            fontWeight: 700,
+          }}
+          title="Ordenar"
+        >
+          <option value="progress_desc">Progresso: maior → menor</option>
+          <option value="progress_asc">Progresso: menor → maior</option>
+          <option value="newest">Mais recentes</option>
+          <option value="oldest">Mais antigas</option>
+          <option value="name_asc">Nome: A → Z</option>
+        </select>
 
         {search ? (
           <button
