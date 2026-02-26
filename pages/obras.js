@@ -40,7 +40,6 @@ function Modal({ open, title, children, onClose }) {
   return (
     <div
       onMouseDown={(e) => {
-        // clique fora fecha
         if (e.target === e.currentTarget) onClose?.()
       }}
       style={{
@@ -56,7 +55,7 @@ function Modal({ open, title, children, onClose }) {
     >
       <div
         style={{
-          width: 'min(720px, 100%)',
+          width: 'min(760px, 100%)',
           background: '#fff',
           borderRadius: 16,
           border: '1px solid #eee',
@@ -98,19 +97,22 @@ export default function ObrasPainelPage() {
   // progress_desc | progress_asc | newest | oldest | name_asc | inprogress_desc | pending_desc
   const [sortBy, setSortBy] = useState('progress_desc')
 
-  // ✅ CRUD modal state
+  // CRUD modal state
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editProjectId, setEditProjectId] = useState(null)
 
-  // campos do form (compatível com schema atual: name/description)
+  // form fields
   const [formName, setFormName] = useState('')
   const [formDescription, setFormDescription] = useState('')
+  const [formClientName, setFormClientName] = useState('')
+  const [formCity, setFormCity] = useState('')
+  const [formAddress, setFormAddress] = useState('')
 
   async function loadData() {
     setLoading(true)
 
-    // 1) Sessão / usuário
+    // usuário
     const { data: authData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !authData?.user) {
       window.location.href = '/login'
@@ -118,7 +120,7 @@ export default function ObrasPainelPage() {
     }
     setUserEmail(authData.user.email || '')
 
-    // 2) Buscar obras + unidades (para métricas do card)
+    // projetos + unidades
     const { data, error } = await supabase
       .from('projects')
       .select(
@@ -126,6 +128,9 @@ export default function ObrasPainelPage() {
         id,
         name,
         description,
+        client_name,
+        city,
+        address,
         created_at,
         units (
           id,
@@ -157,24 +162,17 @@ export default function ObrasPainelPage() {
     loadData()
   }, [])
 
-  // cards
   const cards = useMemo(() => {
     return projects.map((p) => {
       const total = p.units.length
 
-      const counts = {
-        pending: 0,
-        in_progress: 0,
-        done: 0,
-      }
-
+      const counts = { pending: 0, in_progress: 0, done: 0 }
       let sumProgress = 0
 
       for (const u of p.units) {
         const st = u.status || 'pending'
         if (counts[st] === undefined) counts[st] = 0
         counts[st] += 1
-
         sumProgress += clampPct(u.progress)
       }
 
@@ -184,6 +182,9 @@ export default function ObrasPainelPage() {
         id: p.id,
         name: p.name || '(Sem nome)',
         description: p.description || '',
+        client_name: p.client_name || '',
+        city: p.city || '',
+        address: p.address || '',
         created_at: p.created_at || null,
         totalUnits: total,
         avgProgress: avg,
@@ -192,16 +193,22 @@ export default function ObrasPainelPage() {
     })
   }, [projects])
 
-  // filtra + ordena
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()
 
     let list = !q
       ? [...cards]
-      : (cards || []).filter((c) => includesText(c?.name, q) || includesText(c?.description, q))
+      : (cards || []).filter((c) => {
+          return (
+            includesText(c?.name, q) ||
+            includesText(c?.description, q) ||
+            includesText(c?.client_name, q) ||
+            includesText(c?.city, q) ||
+            includesText(c?.address, q)
+          )
+        })
 
     list.sort((a, b) => {
-      // critério principal
       if (sortBy === 'progress_desc') return clampPct(b.avgProgress) - clampPct(a.avgProgress)
       if (sortBy === 'progress_asc') return clampPct(a.avgProgress) - clampPct(b.avgProgress)
       if (sortBy === 'inprogress_desc') return (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0)
@@ -212,18 +219,20 @@ export default function ObrasPainelPage() {
       return 0
     })
 
-    // desempate consistente por nome (quando empata no critério principal)
+    // desempate por nome
     list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name)))
 
     return list
   }, [cards, search, sortBy])
 
-  // ===== CRUD helpers =====
-
+  // ===== CRUD =====
   function openCreateModal() {
     setEditProjectId(null)
     setFormName('')
     setFormDescription('')
+    setFormClientName('')
+    setFormCity('')
+    setFormAddress('')
     setModalOpen(true)
   }
 
@@ -231,6 +240,9 @@ export default function ObrasPainelPage() {
     setEditProjectId(card.id)
     setFormName(card.name === '(Sem nome)' ? '' : safeStr(card.name))
     setFormDescription(safeStr(card.description))
+    setFormClientName(safeStr(card.client_name))
+    setFormCity(safeStr(card.city))
+    setFormAddress(safeStr(card.address))
     setModalOpen(true)
   }
 
@@ -242,29 +254,32 @@ export default function ObrasPainelPage() {
   async function saveProject() {
     const name = safeStr(formName).trim()
     const description = safeStr(formDescription).trim()
+    const client_name = safeStr(formClientName).trim()
+    const city = safeStr(formCity).trim()
+    const address = safeStr(formAddress).trim()
 
     if (!name) {
       alert('Informe o nome da obra.')
+      return
+    }
+    if (!client_name) {
+      alert('Informe o cliente.')
       return
     }
 
     try {
       setSaving(true)
 
-      if (editProjectId) {
-        // EDITAR
-        const { error } = await supabase
-          .from('projects')
-          .update({ name, description })
-          .eq('id', editProjectId)
+      const payload = { name, description, client_name, city, address }
 
+      if (editProjectId) {
+        const { error } = await supabase.from('projects').update(payload).eq('id', editProjectId)
         if (error) {
           alert(`Erro ao editar obra: ${error.message}`)
           return
         }
       } else {
-        // CRIAR
-        const { error } = await supabase.from('projects').insert({ name, description })
+        const { error } = await supabase.from('projects').insert(payload)
         if (error) {
           alert(`Erro ao criar obra: ${error.message}`)
           return
@@ -300,7 +315,6 @@ export default function ObrasPainelPage() {
   }
 
   // ===== UI =====
-
   if (loading) {
     return (
       <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -337,14 +351,14 @@ export default function ObrasPainelPage() {
         </button>
       </div>
 
-      {/* ✅ BUSCA + ORDENAÇÃO */}
+      {/* BUSCA + ORDENAÇÃO */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por obra..."
+          placeholder="Buscar por obra, cliente, cidade, endereço..."
           style={{
-            width: 'min(520px, 100%)',
+            width: 'min(620px, 100%)',
             padding: '10px 12px',
             borderRadius: 12,
             border: '1px solid #ddd',
@@ -429,8 +443,19 @@ export default function ObrasPainelPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{c.name}</div>
+
+                    {c.client_name || c.city ? (
+                      <div style={{ color: '#444', fontSize: 13, lineHeight: 1.35 }}>
+                        {c.client_name ? <b>{c.client_name}</b> : null}
+                        {c.client_name && c.city ? ' • ' : null}
+                        {c.city ? c.city : null}
+                      </div>
+                    ) : null}
+
+                    {c.address ? <div style={{ color: '#666', fontSize: 13, lineHeight: 1.35 }}>{c.address}</div> : null}
+
                     {c.description ? (
-                      <div style={{ color: '#666', fontSize: 13, lineHeight: 1.35 }}>{c.description}</div>
+                      <div style={{ color: '#777', fontSize: 13, lineHeight: 1.35, marginTop: 4 }}>{c.description}</div>
                     ) : null}
                   </div>
 
@@ -448,7 +473,6 @@ export default function ObrasPainelPage() {
                       {c.totalUnits} unidades
                     </div>
 
-                    {/* ✅ menu rápido (editar/excluir) */}
                     <button
                       onClick={() => openEditModal(c)}
                       style={{
@@ -487,14 +511,7 @@ export default function ObrasPainelPage() {
                 </div>
 
                 {/* Contadores */}
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(3, 1fr)',
-                    gap: 10,
-                    marginTop: 4,
-                  }}
-                >
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 4 }}>
                   <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                     <div style={{ fontSize: 12, color: '#666' }}>{STATUS_LABEL.pending}</div>
                     <div style={{ fontSize: 18, fontWeight: 800 }}>{c.counts.pending || 0}</div>
@@ -547,31 +564,13 @@ export default function ObrasPainelPage() {
                   </button>
 
                   <Link href={`/obras/${c.id}/estoque`} style={{ textDecoration: 'none' }}>
-                    <button
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: 12,
-                        border: '1px solid #ddd',
-                        background: '#fff',
-                        cursor: 'pointer',
-                      }}
-                      title="Em breve"
-                    >
+                    <button style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
                       Estoque
                     </button>
                   </Link>
 
                   <Link href={`/obras/${c.id}/relatorios`} style={{ textDecoration: 'none' }}>
-                    <button
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: 12,
-                        border: '1px solid #ddd',
-                        background: '#fff',
-                        cursor: 'pointer',
-                      }}
-                      title="Em breve"
-                    >
+                    <button style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
                       Relatórios
                     </button>
                   </Link>
@@ -586,12 +585,8 @@ export default function ObrasPainelPage() {
         </div>
       )}
 
-      {/* ✅ MODAL (CRIAR/EDITAR) */}
-      <Modal
-        open={modalOpen}
-        title={editProjectId ? 'Editar obra' : 'Nova obra'}
-        onClose={closeModal}
-      >
+      {/* MODAL */}
+      <Modal open={modalOpen} title={editProjectId ? 'Editar obra' : 'Nova obra'} onClose={() => !saving && closeModal()}>
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ display: 'grid', gap: 6 }}>
             <div style={{ fontSize: 12, color: '#444', fontWeight: 800 }}>Nome da obra *</div>
@@ -599,12 +594,42 @@ export default function ObrasPainelPage() {
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
               placeholder="Ex: Edifício Solar / Residencial X"
-              style={{
-                padding: '10px 12px',
-                borderRadius: 12,
-                border: '1px solid #ddd',
-                outline: 'none',
-              }}
+              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+              disabled={saving}
+            />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, color: '#444', fontWeight: 800 }}>Cliente *</div>
+              <input
+                value={formClientName}
+                onChange={(e) => setFormClientName(e.target.value)}
+                placeholder="Ex: Atmós / Emirates / Cliente XPTO"
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+                disabled={saving}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, color: '#444', fontWeight: 800 }}>Cidade</div>
+              <input
+                value={formCity}
+                onChange={(e) => setFormCity(e.target.value)}
+                placeholder="Ex: Goiânia"
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+                disabled={saving}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, color: '#444', fontWeight: 800 }}>Endereço</div>
+            <input
+              value={formAddress}
+              onChange={(e) => setFormAddress(e.target.value)}
+              placeholder="Ex: Rua X, Qd Y, Lt Z - Setor..."
+              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
               disabled={saving}
             />
           </div>
@@ -614,7 +639,7 @@ export default function ObrasPainelPage() {
             <textarea
               value={formDescription}
               onChange={(e) => setFormDescription(e.target.value)}
-              placeholder="Ex: 93 piscinas • Goiânia • Cliente XPTO"
+              placeholder="Ex: 93 piscinas • torre A e B • prazo 90 dias"
               style={{
                 minHeight: 110,
                 padding: '10px 12px',
@@ -631,14 +656,7 @@ export default function ObrasPainelPage() {
             <button
               onClick={closeModal}
               disabled={saving}
-              style={{
-                padding: '10px 12px',
-                borderRadius: 12,
-                border: '1px solid #ddd',
-                background: '#fff',
-                cursor: saving ? 'not-allowed' : 'pointer',
-                fontWeight: 800,
-              }}
+              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 800 }}
             >
               Cancelar
             </button>
