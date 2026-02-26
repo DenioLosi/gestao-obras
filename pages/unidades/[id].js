@@ -51,6 +51,28 @@ export default function UnidadePage() {
   // ✅ novo: controla qual etapa está com menu “Alterar” aberto
   const [editingStatusStageId, setEditingStatusStageId] = useState(null)
 
+  // ✅ novo: indicador de upload por arquivo (por etapa)
+  // formato: { [unitStageId]: { [localKey]: { name, status: 'uploading'|'done'|'error' } } }
+  const [uploadingByStage, setUploadingByStage] = useState({})
+
+  function setFileUploading(unitStageId, localKey, payload) {
+    setUploadingByStage((prev) => ({
+      ...prev,
+      [unitStageId]: {
+        ...(prev?.[unitStageId] || {}),
+        [localKey]: payload,
+      },
+    }))
+  }
+
+  function removeFileUploading(unitStageId, localKey) {
+    setUploadingByStage((prev) => {
+      const stageMap = { ...(prev?.[unitStageId] || {}) }
+      delete stageMap[localKey]
+      return { ...prev, [unitStageId]: stageMap }
+    })
+  }
+
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
     if (error || !data?.user) {
@@ -113,7 +135,9 @@ export default function UnidadePage() {
 
     setUnit(unitData)
 
-    // Etapas + fotos
+    // ✅ Etapas + fotos
+    // ❌ REMOVIDO: .order('created_at') porque unit_stages.created_at não existe no seu banco
+    // ✅ ORDENAR com colunas que existem: stage_id e id
     const { data: stageRows, error: stageErr } = await supabase
       .from('unit_stages')
       .select(
@@ -130,7 +154,8 @@ export default function UnidadePage() {
       `
       )
       .eq('unit_id', unitId)
-      .order('created_at', { ascending: true })
+      .order('stage_id', { ascending: true })
+      .order('id', { ascending: true })
 
     if (stageErr) {
       console.error('Erro ao carregar etapas:', stageErr)
@@ -227,8 +252,69 @@ export default function UnidadePage() {
     }
   }
 
-  async function onUploadPhoto(unitStageId, file, caption) {
-    if (!file) return
+  // ✅ upload de UMA foto (usado pelo upload múltiplo)
+  async function uploadOnePhoto(unitStageId, file, caption) {
+    if (!file) return null
+    if (!user?.id) {
+      alert('Usuário não autenticado.')
+      return null
+    }
+
+    const ext = extFromName(file.name)
+    const path = `units/${unitId}/unit_stages/${unitStageId}/${randomId()}.${ext}`
+
+    const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || undefined,
+    })
+
+    if (upErr) {
+      throw new Error(upErr.message)
+    }
+
+    const { data: photoRow, error: insErr } = await supabase
+      .from('unit_stage_photos')
+      .insert({
+        unit_stage_id: unitStageId,
+        user_id: user.id,
+        kind: 'image',
+        path,
+        caption: safeStr(caption || ''),
+      })
+      .select('id, path, caption, kind, created_at, user_id')
+      .maybeSingle()
+
+    if (insErr) {
+      throw new Error(insErr.message)
+    }
+
+    await supabase.from('unit_stage_logs').insert({
+      unit_stage_id: unitStageId,
+      user_id: user.id,
+      action: 'photo_added',
+      old_value: null,
+      new_value: {
+        photo_id: photoRow?.id || null,
+        path,
+        kind: 'image',
+        caption: safeStr(caption || ''),
+      },
+    })
+
+    if (photoRow?.id && path) {
+      const { data: signed, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60)
+      if (!sErr && signed?.signedUrl) {
+        setSignedUrlByPhotoId((prev) => ({ ...prev, [photoRow.id]: signed.signedUrl }))
+      }
+    }
+
+    return photoRow
+  }
+
+  // ✅ upload MÚLTIPLO: seleciona várias imagens e envia uma a uma
+  async function onUploadPhotos(unitStageId, files) {
+    if (!files || files.length === 0) return
     if (!user?.id) {
       alert('Usuário não autenticado.')
       return
@@ -237,60 +323,82 @@ export default function UnidadePage() {
     try {
       setUploadingStageId(unitStageId)
 
-      const ext = extFromName(file.name)
-      const path = `units/${unitId}/unit_stages/${unitStageId}/${randomId()}.${ext}`
+      // legenda única opcional (vale pra todas as fotos) — simples e rápido
+      const caption = window.prompt('Legenda (opcional, aplica em todas):', '') || ''
 
-      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: file.type || undefined,
-      })
+      for (const file of Array.from(files)) {
+        const localKey = `${file.name}-${file.size}-${Date.now()}`
+        setFileUploading(unitStageId, localKey, { name: file.name, status: 'uploading' })
 
-      if (upErr) {
-        alert(`Erro no upload: ${upErr.message}`)
-        return
-      }
-
-      const { data: photoRow, error: insErr } = await supabase
-        .from('unit_stage_photos')
-        .insert({
-          unit_stage_id: unitStageId,
-          user_id: user.id,
-          kind: 'image',
-          path,
-          caption: safeStr(caption || ''),
-        })
-        .select('id, path, caption, kind, created_at, user_id')
-        .maybeSingle()
-
-      if (insErr) {
-        alert(`Upload ok, mas erro ao salvar no banco: ${insErr.message}`)
-        return
-      }
-
-      await supabase.from('unit_stage_logs').insert({
-        unit_stage_id: unitStageId,
-        user_id: user.id,
-        action: 'photo_added',
-        old_value: null,
-        new_value: {
-          photo_id: photoRow?.id || null,
-          path,
-          kind: 'image',
-          caption: safeStr(caption || ''),
-        },
-      })
-
-      if (photoRow?.id && path) {
-        const { data: signed, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60)
-        if (!sErr && signed?.signedUrl) {
-          setSignedUrlByPhotoId((prev) => ({ ...prev, [photoRow.id]: signed.signedUrl }))
+        try {
+          await uploadOnePhoto(unitStageId, file, caption)
+          setFileUploading(unitStageId, localKey, { name: file.name, status: 'done' })
+          // remove da lista após 1.2s pra não poluir
+          setTimeout(() => removeFileUploading(unitStageId, localKey), 1200)
+        } catch (e) {
+          console.error(e)
+          setFileUploading(unitStageId, localKey, { name: file.name, status: 'error' })
         }
       }
 
       await loadAll()
     } finally {
       setUploadingStageId(null)
+    }
+  }
+
+  // ✅ EXCLUIR FOTO: remove no Storage + remove na tabela + log
+  async function onDeletePhoto(unitStageId, photo) {
+    if (!photo?.id || !photo?.path) return
+    if (!user?.id) {
+      alert('Usuário não autenticado.')
+      return
+    }
+
+    const ok = window.confirm('Tem certeza que deseja excluir esta foto?')
+    if (!ok) return
+
+    try {
+      setBusyStageId(unitStageId)
+
+      // 1) storage delete
+      const { error: stErr } = await supabase.storage.from(BUCKET).remove([photo.path])
+      if (stErr) {
+        alert(`Erro ao excluir no storage: ${stErr.message}`)
+        return
+      }
+
+      // 2) db delete
+      const { error: dbErr } = await supabase.from('unit_stage_photos').delete().eq('id', photo.id)
+      if (dbErr) {
+        alert(`Erro ao excluir no banco: ${dbErr.message}`)
+        return
+      }
+
+      // 3) log
+      await supabase.from('unit_stage_logs').insert({
+        unit_stage_id: unitStageId,
+        user_id: user.id,
+        action: 'photo_deleted',
+        old_value: {
+          photo_id: photo.id,
+          path: photo.path,
+          kind: photo.kind || null,
+          caption: photo.caption || null,
+        },
+        new_value: null,
+      })
+
+      // 4) limpar signed url do state
+      setSignedUrlByPhotoId((prev) => {
+        const copy = { ...prev }
+        delete copy[photo.id]
+        return copy
+      })
+
+      await loadAll()
+    } finally {
+      setBusyStageId(null)
     }
   }
 
@@ -331,6 +439,8 @@ export default function UnidadePage() {
         {stages.map((s) => {
           const isBusy = busyStageId === s.id
           const isUploading = uploadingStageId === s.id
+          const uploadingMap = uploadingByStage?.[s.id] || {}
+          const uploadingItems = Object.values(uploadingMap)
 
           return (
             <div
@@ -479,17 +589,17 @@ export default function UnidadePage() {
                       fontWeight: 700,
                     }}
                   >
-                    {isUploading ? 'Enviando…' : 'Adicionar foto'}
+                    {isUploading ? 'Enviando…' : 'Adicionar fotos'}
                     <input
                       type="file"
                       accept="image/*"
+                      multiple
                       disabled={isUploading}
                       style={{ display: 'none' }}
                       onChange={async (e) => {
-                        const file = e.target.files?.[0]
-                        if (!file) return
-                        const caption = window.prompt('Legenda (opcional):', '') || ''
-                        await onUploadPhoto(s.id, file, caption)
+                        const files = e.target.files
+                        if (!files || files.length === 0) return
+                        await onUploadPhotos(s.id, files)
                         e.target.value = ''
                       }}
                     />
@@ -499,6 +609,20 @@ export default function UnidadePage() {
                     Fotos: <b>{(s.photos || []).length}</b>
                   </div>
                 </div>
+
+                {/* ✅ Indicador por arquivo */}
+                {uploadingItems.length > 0 ? (
+                  <div style={{ fontSize: 12, color: '#555', display: 'grid', gap: 4 }}>
+                    {uploadingItems.map((it) => (
+                      <div key={it.name + it.status} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ fontWeight: 700 }}>{it.name}</span>
+                        <span style={{ color: it.status === 'error' ? '#b00020' : '#666' }}>
+                          {it.status === 'uploading' ? 'enviando…' : it.status === 'done' ? 'ok' : 'erro'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
 
                 {(s.photos || []).length > 0 ? (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
@@ -515,8 +639,30 @@ export default function UnidadePage() {
                               borderRadius: 12,
                               padding: 10,
                               background: '#fafafa',
+                              position: 'relative',
                             }}
                           >
+                            {/* ✅ botão excluir */}
+                            <button
+                              onClick={() => onDeletePhoto(s.id, p)}
+                              disabled={isBusy || isUploading}
+                              title="Excluir foto"
+                              style={{
+                                position: 'absolute',
+                                top: 8,
+                                right: 8,
+                                borderRadius: 10,
+                                border: '1px solid #ddd',
+                                background: '#fff',
+                                padding: '6px 8px',
+                                cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
+                                fontWeight: 900,
+                                lineHeight: 1,
+                              }}
+                            >
+                              ✕
+                            </button>
+
                             {url ? (
                               <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
                                 <img
@@ -550,10 +696,12 @@ export default function UnidadePage() {
                             )}
 
                             <div style={{ fontSize: 12, color: '#444', marginTop: 8 }}>
-                              {p.caption ? <div style={{ marginBottom: 4 }}><b>{p.caption}</b></div> : null}
-                              <div style={{ color: '#777' }}>
-                                {p.created_at ? new Date(p.created_at).toLocaleString() : ''}
-                              </div>
+                              {p.caption ? (
+                                <div style={{ marginBottom: 4 }}>
+                                  <b>{p.caption}</b>
+                                </div>
+                              ) : null}
+                              <div style={{ color: '#777' }}>{p.created_at ? new Date(p.created_at).toLocaleString() : ''}</div>
                             </div>
                           </div>
                         )
