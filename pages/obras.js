@@ -25,6 +25,10 @@ function includesText(v, q) {
   return (v ?? '').toString().toLowerCase().includes(q)
 }
 
+function safeStr(v) {
+  return (v ?? '').toString()
+}
+
 export default function ObrasPainelPage() {
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
@@ -34,7 +38,7 @@ export default function ObrasPainelPage() {
   const [search, setSearch] = useState('')
 
   // ✅ ordenação
-  // progress_desc | progress_asc | newest | oldest | name_asc
+  // progress_desc | progress_asc | newest | oldest | name_asc | inprogress_desc | pending_desc
   const [sortBy, setSortBy] = useState('progress_desc')
 
   async function loadData() {
@@ -150,30 +154,28 @@ export default function ObrasPainelPage() {
     }
 
     list.sort((a, b) => {
-      if (sortBy === 'progress_desc') {
-        return clampPct(b.avgProgress) - clampPct(a.avgProgress)
-      }
-      if (sortBy === 'progress_asc') {
-        return clampPct(a.avgProgress) - clampPct(b.avgProgress)
-      }
-      if (sortBy === 'newest') {
-        return getTime(b) - getTime(a)
-      }
-      if (sortBy === 'oldest') {
-        return getTime(a) - getTime(b)
-      }
-      if (sortBy === 'name_asc') {
-        return safeStr(a?.name).localeCompare(safeStr(b?.name))
-      }
+      // 🔥 critério principal
+      if (sortBy === 'progress_desc') return clampPct(b.avgProgress) - clampPct(a.avgProgress)
+      if (sortBy === 'progress_asc') return clampPct(a.avgProgress) - clampPct(b.avgProgress)
+      if (sortBy === 'inprogress_desc') return (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0)
+      if (sortBy === 'pending_desc') return (b.counts?.pending || 0) - (a.counts?.pending || 0)
+      if (sortBy === 'newest') return getTime(b) - getTime(a)
+      if (sortBy === 'oldest') return getTime(a) - getTime(b)
+      if (sortBy === 'name_asc') return safeStr(a?.name).localeCompare(safeStr(b?.name))
+
       return 0
+    })
+
+    // ✅ desempate consistente (para não ficar “pulando”)
+    list.sort((a, b) => {
+      // quando empata no critério principal, desempata por nome
+      const an = safeStr(a?.name)
+      const bn = safeStr(b?.name)
+      return an.localeCompare(bn)
     })
 
     return list
   }, [cards, search, sortBy])
-
-  function safeStr(v) {
-    return (v ?? '').toString()
-  }
 
   if (loading) {
     return (
@@ -221,6 +223,8 @@ export default function ObrasPainelPage() {
         >
           <option value="progress_desc">Progresso: maior → menor</option>
           <option value="progress_asc">Progresso: menor → maior</option>
+          <option value="inprogress_desc">Em andamento primeiro</option>
+          <option value="pending_desc">Mais pendências primeiro</option>
           <option value="newest">Mais recentes</option>
           <option value="oldest">Mais antigas</option>
           <option value="name_asc">Nome: A → Z</option>
