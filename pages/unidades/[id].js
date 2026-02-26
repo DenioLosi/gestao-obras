@@ -425,7 +425,6 @@ export default function UnidadePage() {
         <div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Unidade</div>
           <h1 style={{ margin: 0 }}>Unidade {unit.identifier || unit.id}</h1>
-          <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>project_id: {unit.project_id}</div>
         </div>
 
         <Link href={`/obras/${unit.project_id}`}>← Voltar</Link>
