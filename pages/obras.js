@@ -21,10 +21,17 @@ function clampPct(n) {
   return Math.max(0, Math.min(100, v))
 }
 
+function includesText(v, q) {
+  return (v ?? '').toString().toLowerCase().includes(q)
+}
+
 export default function ObrasPainelPage() {
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
   const [projects, setProjects] = useState([])
+
+  // ✅ novo: busca
+  const [search, setSearch] = useState('')
 
   async function loadData() {
     setLoading(true)
@@ -76,6 +83,7 @@ export default function ObrasPainelPage() {
     loadData()
   }, [])
 
+  // ✅ cards (igual ao seu)
   const cards = useMemo(() => {
     return projects.map((p) => {
       const total = p.units.length
@@ -102,12 +110,30 @@ export default function ObrasPainelPage() {
         id: p.id,
         name: p.name || '(Sem nome)',
         description: p.description || '',
+        // ✅ campos futuros (se você criar depois, já funciona na busca)
+        client_name: p.client_name || '',
+        city: p.city || '',
         totalUnits: total,
         avgProgress: avg,
         counts,
       }
     })
   }, [projects])
+
+  // ✅ novo: filtra cards pelo search
+  const filteredCards = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return cards
+
+    return (cards || []).filter((c) => {
+      return (
+        includesText(c?.name, q) ||
+        includesText(c?.description, q) ||
+        includesText(c?.client_name, q) ||
+        includesText(c?.city, q)
+      )
+    })
+  }, [cards, search])
 
   if (loading) {
     return (
@@ -121,12 +147,52 @@ export default function ObrasPainelPage() {
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
       <h1 style={{ marginBottom: 6 }}>Obras</h1>
-      <div style={{ color: '#444', marginBottom: 18 }}>
+      <div style={{ color: '#444', marginBottom: 12 }}>
         Usuário logado: <b>{userEmail}</b>
+      </div>
+
+      {/* ✅ BUSCA */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar por obra, cliente, cidade..."
+          style={{
+            width: 'min(520px, 100%)',
+            padding: '10px 12px',
+            borderRadius: 12,
+            border: '1px solid #ddd',
+            outline: 'none',
+          }}
+        />
+
+        {search ? (
+          <button
+            onClick={() => setSearch('')}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: '#fff',
+              cursor: 'pointer',
+              fontWeight: 700,
+            }}
+          >
+            Limpar
+          </button>
+        ) : null}
+
+        <div style={{ fontSize: 12, color: '#666' }}>
+          Mostrando <b>{filteredCards.length}</b> de <b>{cards.length}</b>
+        </div>
       </div>
 
       {cards.length === 0 ? (
         <div style={{ marginTop: 18, color: '#444' }}>Nenhuma obra cadastrada.</div>
+      ) : filteredCards.length === 0 ? (
+        <div style={{ marginTop: 18, color: '#444' }}>
+          Nenhuma obra encontrada para: <b>{search}</b>
+        </div>
       ) : (
         <div
           style={{
@@ -136,7 +202,7 @@ export default function ObrasPainelPage() {
             maxWidth: 1100,
           }}
         >
-          {cards.map((c) => {
+          {filteredCards.map((c) => {
             const pct = Math.round(c.avgProgress)
 
             return (
