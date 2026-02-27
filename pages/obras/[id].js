@@ -156,7 +156,7 @@ export default function ObraDetalhePage() {
     // 1) Projeto
     const { data: p, error: pErr } = await supabase
       .from('projects')
-      .select('id, name, description, client_name, city, address, created_at')
+      .select('id, name, description, client_name, city, address')
       .eq('id', projectId)
       .maybeSingle()
 
@@ -170,15 +170,16 @@ export default function ObraDetalhePage() {
     }
     setProject(p || null)
 
-    // 2) Etapas modelo da obra (stages)
+    // 2) Etapas modelo da obra (stages) — SEM created_at
     const { data: st, error: stErr } = await supabase
       .from('stages')
-      .select('id, name, position, is_active, project_id, created_at')
+      .select('id, name, position, is_active, project_id')
       .eq('project_id', projectId)
       .order('position', { ascending: true, nullsFirst: true })
-      .order('created_at', { ascending: true })
+      .order('name', { ascending: true }) // fallback estável sem created_at
 
     if (stErr) {
+      console.error('Erro ao carregar etapas da obra:', stErr)
       alert(`Erro ao carregar etapas da obra: ${stErr.message}`)
       setStageTemplates([])
     } else {
@@ -188,7 +189,7 @@ export default function ObraDetalhePage() {
     // 3) Unidades
     const { data: uRows, error: uErr } = await supabase
       .from('units')
-      .select('id, project_id, identifier, status, progress, created_at')
+      .select('id, project_id, identifier, status, progress')
       .eq('project_id', projectId)
       .order('identifier', { ascending: true })
 
@@ -272,7 +273,6 @@ export default function ObraDetalhePage() {
     const n = safeStr(name).trim()
     if (!n) return
 
-    // position: último + 1
     const maxPos = (stageTemplates || []).reduce((m, s) => {
       const p = Number(s.position)
       if (!Number.isFinite(p)) return m
@@ -306,7 +306,6 @@ export default function ObraDetalhePage() {
       return
     }
 
-    // começa do último position + 1
     const maxPos = (stageTemplates || []).reduce((m, s) => {
       const p = Number(s.position)
       if (!Number.isFinite(p)) return m
@@ -331,7 +330,6 @@ export default function ObraDetalhePage() {
           return
         }
       }
-
       setBulkStageLines('')
       await loadData()
     } finally {
@@ -355,9 +353,9 @@ export default function ObraDetalhePage() {
   }
 
   async function moveStage(stageId, dir) {
-    // dir = -1 (up) ou +1 (down)
     const list = [...stageTemplates].sort((a, b) => {
-      const ap = Number(a.position); const bp = Number(b.position)
+      const ap = Number(a.position)
+      const bp = Number(b.position)
       if (!Number.isFinite(ap) && !Number.isFinite(bp)) return 0
       if (!Number.isFinite(ap)) return 1
       if (!Number.isFinite(bp)) return -1
@@ -410,22 +408,16 @@ export default function ObraDetalhePage() {
   // ====== APLICAR ETAPAS ÀS UNIDADES (SEM ETAPAS) ======
 
   async function applyStagesToUnitsMissing(unitIds) {
-    // Puxa quais unidades já têm pelo menos 1 unit_stage
     const ids = unitIds.filter(Boolean)
     if (ids.length === 0) return { created: 0, affectedUnits: 0 }
 
     const stageIds = activeStages.map((s) => s.id)
     if (stageIds.length === 0) {
-      alert('Você ainda não cadastrou etapas para esta obra. Abra "Etapas da obra" e crie as etapas primeiro.')
+      alert('Cadastre as etapas desta obra primeiro (Etapas da obra).')
       return { created: 0, affectedUnits: 0 }
     }
 
-    const { data: existing, error } = await supabase
-      .from('unit_stages')
-      .select('unit_id')
-      .in('unit_id', ids)
-      .limit(100000)
-
+    const { data: existing, error } = await supabase.from('unit_stages').select('unit_id').in('unit_id', ids).limit(100000)
     if (error) {
       alert(`Erro ao verificar etapas existentes: ${error.message}`)
       return { created: 0, affectedUnits: 0 }
@@ -434,23 +426,15 @@ export default function ObraDetalhePage() {
     const has = new Set((existing || []).map((r) => safeStr(r.unit_id)))
     const missing = ids.filter((uid) => !has.has(safeStr(uid)))
 
-    if (missing.length === 0) {
-      return { created: 0, affectedUnits: 0 }
-    }
+    if (missing.length === 0) return { created: 0, affectedUnits: 0 }
 
-    // monta inserts
     const rows = []
     for (const uid of missing) {
       for (const sid of stageIds) {
-        rows.push({
-          unit_id: uid,
-          stage_id: sid,
-          status: 'pending',
-        })
+        rows.push({ unit_id: uid, stage_id: sid, status: 'pending' })
       }
     }
 
-    // insere em lotes
     let inserted = 0
     const B = 500
     for (let i = 0; i < rows.length; i += B) {
@@ -512,13 +496,11 @@ export default function ObraDetalhePage() {
       return
     }
 
-    // ⚠️ precisa de etapas modelo para criar unit_stages automaticamente
     if (activeStages.length === 0) {
-      alert('Antes de gerar unidades, cadastre as etapas da obra (modelo). Clique em "Etapas da obra".')
+      alert('Antes de gerar unidades, cadastre as etapas da obra (Etapas da obra).')
       return
     }
 
-    // gera identifiers
     const identifiers = []
     for (let f = start; f <= end; f++) {
       for (let i = 1; i <= perFloor; i++) {
@@ -526,7 +508,6 @@ export default function ObraDetalhePage() {
       }
     }
 
-    // evita duplicar
     const existing = new Set((units || []).map((u) => safeStr(u?.identifier)))
     const toCreate = identifiers.filter((x) => !existing.has(x))
 
@@ -543,7 +524,6 @@ export default function ObraDetalhePage() {
     try {
       setBulkBusy(true)
 
-      // 1) inserir units (lotes)
       const payloadUnits = toCreate.map((identifier) => ({
         project_id: projectId,
         identifier,
@@ -564,7 +544,6 @@ export default function ObraDetalhePage() {
         if (Array.isArray(data)) created.push(...data)
       }
 
-      // 2) cria unit_stages para as unidades criadas
       const stageIds = activeStages.map((s) => s.id)
       const rows = []
       for (const u of created) {
@@ -583,15 +562,9 @@ export default function ObraDetalhePage() {
         }
       }
 
-      // 3) opcional: aplica para unidades antigas sem etapas
       if (bulkApplyStagesToExistingMissing) {
         const allUnitIds = [...(units || []).map((u) => u.id), ...created.map((x) => x.id)]
-        const res = await applyStagesToUnitsMissing(allUnitIds)
-        // obs: isso vai “pegar” também as criadas (mas como já criamos, elas já têm e serão ignoradas)
-        if (res.affectedUnits > 0) {
-          // só informativo
-          console.log('Applied stages to missing:', res)
-        }
+        await applyStagesToUnitsMissing(allUnitIds)
       }
 
       alert(`Criadas ${created.length} unidades com etapas.`)
@@ -631,19 +604,22 @@ export default function ObraDetalhePage() {
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Obra</div>
           <h1 style={{ margin: 0 }}>{project.name || '(Sem nome)'}</h1>
 
-          {(project.client_name || project.city) && (
+          <div style={{ color: '#444', marginTop: 6 }}>
+            Usuário logado: <b>{userEmail}</b>
+          </div>
+
+          {(project.client_name || project.city) ? (
             <div style={{ marginTop: 10, color: '#444' }}>
               {project.client_name ? <b>{project.client_name}</b> : null}
               {project.client_name && project.city ? ' • ' : null}
               {project.city ? project.city : null}
             </div>
-          )}
+          ) : null}
 
           {project.address ? <div style={{ marginTop: 4, color: '#666' }}>{project.address}</div> : null}
           {project.description ? <div style={{ marginTop: 8, color: '#777' }}>{project.description}</div> : null}
@@ -1067,7 +1043,7 @@ export default function ObraDetalhePage() {
                   </div>
 
                   <div style={{ fontSize: 12, color: '#777' }}>
-                    Dica: o nome salva ao sair do campo (blur). A ordem é usada para listar etapas na unidade.
+                    Dica: o nome salva ao sair do campo. A ordem (position) define a ordem na unidade.
                   </div>
                 </div>
               ))
@@ -1081,9 +1057,7 @@ export default function ObraDetalhePage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 13, color: '#444' }}>
             Etapas do modelo ativas: <b>{activeStages.length}</b>{' '}
-            {activeStages.length === 0 ? (
-              <span style={{ color: '#b00020', fontWeight: 900 }}> (cadastre etapas antes)</span>
-            ) : null}
+            {activeStages.length === 0 ? <span style={{ color: '#b00020', fontWeight: 900 }}>(cadastre antes)</span> : null}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
