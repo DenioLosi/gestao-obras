@@ -87,7 +87,6 @@ function Modal({ open, title, onClose, children, busy }) {
             ✕
           </button>
         </div>
-
         <div style={{ marginTop: 12 }}>{children}</div>
       </div>
     </div>
@@ -110,28 +109,26 @@ export default function ObraDetalhePage() {
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
 
-  // ✅ Etapas (modelo da obra)
+  // Etapas (modelo)
   const [stageTemplates, setStageTemplates] = useState([])
   const [stagesOpen, setStagesOpen] = useState(false)
   const [stagesBusy, setStagesBusy] = useState(false)
   const [showArchivedStages, setShowArchivedStages] = useState(false)
   const [newStageName, setNewStageName] = useState('')
-  const [bulkStageLines, setBulkStageLines] = useState('') // uma etapa por linha
+  const [bulkStageLines, setBulkStageLines] = useState('')
 
   // UI unidades
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState('all') // all | pending | in_progress | done
-  const [sortBy, setSortBy] = useState('identifier_asc') // identifier_asc | identifier_desc | progress_desc | progress_asc
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('identifier_asc')
 
-  // ✅ Gerar unidades (por pavimento)
+  // Gerar unidades
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkFloorStart, setBulkFloorStart] = useState(3)
   const [bulkFloorEnd, setBulkFloorEnd] = useState(30)
   const [bulkUnitsPerFloor, setBulkUnitsPerFloor] = useState(4)
   const [bulkPad2Digits, setBulkPad2Digits] = useState(true)
-
-  // ✅ aplicar etapas em massa
   const [bulkApplyStagesToExistingMissing, setBulkApplyStagesToExistingMissing] = useState(true)
 
   async function ensureAuth() {
@@ -153,7 +150,7 @@ export default function ObraDetalhePage() {
     const u = await ensureAuth()
     if (!u) return
 
-    // 1) Projeto
+    // Projeto
     const { data: p, error: pErr } = await supabase
       .from('projects')
       .select('id, name, description, client_name, city, address')
@@ -170,13 +167,13 @@ export default function ObraDetalhePage() {
     }
     setProject(p || null)
 
-    // 2) Etapas modelo da obra (stages) — SEM created_at
+    // Etapas (stages) — usa order_index
     const { data: st, error: stErr } = await supabase
       .from('stages')
-      .select('id, name, position, is_active, project_id')
+      .select('id, name, order_index, is_active, project_id')
       .eq('project_id', projectId)
-      .order('position', { ascending: true, nullsFirst: true })
-      .order('name', { ascending: true }) // fallback estável sem created_at
+      .order('order_index', { ascending: true })
+      .order('name', { ascending: true })
 
     if (stErr) {
       console.error('Erro ao carregar etapas da obra:', stErr)
@@ -186,7 +183,7 @@ export default function ObraDetalhePage() {
       setStageTemplates(Array.isArray(st) ? st : [])
     }
 
-    // 3) Unidades
+    // Unidades
     const { data: uRows, error: uErr } = await supabase
       .from('units')
       .select('id, project_id, identifier, status, progress')
@@ -209,9 +206,7 @@ export default function ObraDetalhePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, projectId])
 
-  const activeStages = useMemo(() => {
-    return (stageTemplates || []).filter((s) => s.is_active !== false)
-  }, [stageTemplates])
+  const activeStages = useMemo(() => (stageTemplates || []).filter((s) => s.is_active !== false), [stageTemplates])
 
   const stagesForList = useMemo(() => {
     if (showArchivedStages) return stageTemplates
@@ -254,11 +249,8 @@ export default function ObraDetalhePage() {
   }, [units, search, statusFilter, sortBy])
 
   async function deleteUnit(unitId, identifier) {
-    const ok = window.confirm(
-      `Excluir unidade ${identifier || ''}?\n\nATENÇÃO: se existirem etapas/fotos vinculadas, o banco pode bloquear (ou apagar junto, dependendo do seu schema).`
-    )
+    const ok = window.confirm(`Excluir unidade ${identifier || ''}?`)
     if (!ok) return
-
     const { error } = await supabase.from('units').delete().eq('id', unitId)
     if (error) {
       alert(`Erro ao excluir unidade: ${error.message}`)
@@ -267,22 +259,26 @@ export default function ObraDetalhePage() {
     await loadData()
   }
 
-  // ====== ETAPAS (MODELO DA OBRA) ======
+  // ====== ETAPAS (MODELO) usando order_index ======
+
+  function getMaxOrderIndex() {
+    return (stageTemplates || []).reduce((m, s) => {
+      const v = Number(s.order_index)
+      if (!Number.isFinite(v)) return m
+      return Math.max(m, v)
+    }, 0)
+  }
 
   async function createStageTemplate(name) {
     const n = safeStr(name).trim()
     if (!n) return
 
-    const maxPos = (stageTemplates || []).reduce((m, s) => {
-      const p = Number(s.position)
-      if (!Number.isFinite(p)) return m
-      return Math.max(m, p)
-    }, 0)
+    const nextOrder = getMaxOrderIndex() + 1
 
     const payload = {
       project_id: projectId,
       name: n,
-      position: maxPos + 1,
+      order_index: nextOrder,
       is_active: true,
     }
 
@@ -306,16 +302,11 @@ export default function ObraDetalhePage() {
       return
     }
 
-    const maxPos = (stageTemplates || []).reduce((m, s) => {
-      const p = Number(s.position)
-      if (!Number.isFinite(p)) return m
-      return Math.max(m, p)
-    }, 0)
-
+    const base = getMaxOrderIndex()
     const rows = lines.map((name, idx) => ({
       project_id: projectId,
       name,
-      position: maxPos + 1 + idx,
+      order_index: base + 1 + idx,
       is_active: true,
     }))
 
@@ -343,7 +334,6 @@ export default function ObraDetalhePage() {
       alert('Nome da etapa não pode ficar vazio.')
       return
     }
-
     const { error } = await supabase.from('stages').update({ name: n }).eq('id', stageId)
     if (error) {
       alert(`Erro ao salvar nome: ${error.message}`)
@@ -353,15 +343,7 @@ export default function ObraDetalhePage() {
   }
 
   async function moveStage(stageId, dir) {
-    const list = [...stageTemplates].sort((a, b) => {
-      const ap = Number(a.position)
-      const bp = Number(b.position)
-      if (!Number.isFinite(ap) && !Number.isFinite(bp)) return 0
-      if (!Number.isFinite(ap)) return 1
-      if (!Number.isFinite(bp)) return -1
-      return ap - bp
-    })
-
+    const list = [...stageTemplates].sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0))
     const idx = list.findIndex((s) => s.id === stageId)
     if (idx === -1) return
     const j = idx + dir
@@ -370,17 +352,17 @@ export default function ObraDetalhePage() {
     const a = list[idx]
     const b = list[j]
 
-    const pa = Number.isFinite(Number(a.position)) ? Number(a.position) : idx + 1
-    const pb = Number.isFinite(Number(b.position)) ? Number(b.position) : j + 1
+    const oa = Number(a.order_index || idx + 1)
+    const ob = Number(b.order_index || j + 1)
 
     setStagesBusy(true)
     try {
-      const { error: e1 } = await supabase.from('stages').update({ position: pb }).eq('id', a.id)
+      const { error: e1 } = await supabase.from('stages').update({ order_index: ob }).eq('id', a.id)
       if (e1) {
         alert(`Erro ao reordenar: ${e1.message}`)
         return
       }
-      const { error: e2 } = await supabase.from('stages').update({ position: pa }).eq('id', b.id)
+      const { error: e2 } = await supabase.from('stages').update({ order_index: oa }).eq('id', b.id)
       if (e2) {
         alert(`Erro ao reordenar: ${e2.message}`)
         return
@@ -425,7 +407,6 @@ export default function ObraDetalhePage() {
 
     const has = new Set((existing || []).map((r) => safeStr(r.unit_id)))
     const missing = ids.filter((uid) => !has.has(safeStr(uid)))
-
     if (missing.length === 0) return { created: 0, affectedUnits: 0 }
 
     const rows = []
@@ -574,8 +555,6 @@ export default function ObraDetalhePage() {
       setBulkBusy(false)
     }
   }
-
-  // ====== RENDER ======
 
   if (loading) {
     return (
@@ -1043,7 +1022,7 @@ export default function ObraDetalhePage() {
                   </div>
 
                   <div style={{ fontSize: 12, color: '#777' }}>
-                    Dica: o nome salva ao sair do campo. A ordem (position) define a ordem na unidade.
+                    Dica: o nome salva ao sair do campo. A ordem (order_index) define a ordem na unidade.
                   </div>
                 </div>
               ))
@@ -1097,12 +1076,7 @@ export default function ObraDetalhePage() {
 
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: bulkBusy ? 'not-allowed' : 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={bulkPad2Digits}
-                onChange={(e) => setBulkPad2Digits(e.target.checked)}
-                disabled={bulkBusy}
-              />
+              <input type="checkbox" checked={bulkPad2Digits} onChange={(e) => setBulkPad2Digits(e.target.checked)} disabled={bulkBusy} />
               <span style={{ fontSize: 13, color: '#444' }}>
                 Usar 2 dígitos (01, 02...) → Ex: 3 + 01 = <b>301</b>
               </span>
@@ -1117,19 +1091,6 @@ export default function ObraDetalhePage() {
               />
               <span style={{ fontSize: 13, color: '#444' }}>Também aplicar etapas em unidades antigas sem etapas</span>
             </label>
-          </div>
-
-          <div style={{ fontSize: 13, color: '#666' }}>
-            Exemplo (primeiras):{' '}
-            <b>
-              {(() => {
-                const start = Number(bulkFloorStart) || 0
-                const per = Number(bulkUnitsPerFloor) || 0
-                const ex = []
-                for (let i = 1; i <= Math.min(6, per); i++) ex.push(makeIdentifier(start, i, bulkPad2Digits))
-                return ex.join(', ')
-              })()}
-            </b>
           </div>
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
