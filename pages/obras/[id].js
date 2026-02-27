@@ -41,6 +41,59 @@ function makeIdentifier(floor, unitIndex, pad2) {
   return `${floor}${suffix}`
 }
 
+function Modal({ open, title, onClose, children, busy }) {
+  if (!open) return null
+  return (
+    <div
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose?.()
+      }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        zIndex: 1000,
+      }}
+    >
+      <div
+        style={{
+          width: 'min(860px, 100%)',
+          background: '#fff',
+          borderRadius: 16,
+          border: '1px solid #eee',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+          padding: 16,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
+          <button
+            onClick={() => !busy && onClose?.()}
+            style={{
+              border: '1px solid #ddd',
+              background: '#fff',
+              borderRadius: 12,
+              padding: '8px 10px',
+              cursor: busy ? 'not-allowed' : 'pointer',
+              fontWeight: 800,
+            }}
+            title="Fechar"
+            disabled={busy}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12 }}>{children}</div>
+      </div>
+    </div>
+  )
+}
+
 export default function ObraDetalhePage() {
   const router = useRouter()
   const { id } = router.query
@@ -57,20 +110,29 @@ export default function ObraDetalhePage() {
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
 
-  // UI
+  // ✅ Etapas (modelo da obra)
+  const [stageTemplates, setStageTemplates] = useState([])
+  const [stagesOpen, setStagesOpen] = useState(false)
+  const [stagesBusy, setStagesBusy] = useState(false)
+  const [showArchivedStages, setShowArchivedStages] = useState(false)
+  const [newStageName, setNewStageName] = useState('')
+  const [bulkStageLines, setBulkStageLines] = useState('') // uma etapa por linha
+
+  // UI unidades
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all') // all | pending | in_progress | done
   const [sortBy, setSortBy] = useState('identifier_asc') // identifier_asc | identifier_desc | progress_desc | progress_asc
 
-  // ====== GERAR UNIDADES EM MASSA (por pavimento) ======
+  // ✅ Gerar unidades (por pavimento)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
-
   const [bulkFloorStart, setBulkFloorStart] = useState(3)
   const [bulkFloorEnd, setBulkFloorEnd] = useState(30)
   const [bulkUnitsPerFloor, setBulkUnitsPerFloor] = useState(4)
   const [bulkPad2Digits, setBulkPad2Digits] = useState(true)
-  const [bulkCreateStages, setBulkCreateStages] = useState(true)
+
+  // ✅ aplicar etapas em massa
+  const [bulkApplyStagesToExistingMissing, setBulkApplyStagesToExistingMissing] = useState(true)
 
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
@@ -102,13 +164,28 @@ export default function ObraDetalhePage() {
       alert(`Erro ao carregar obra: ${pErr.message}`)
       setProject(null)
       setUnits([])
+      setStageTemplates([])
       setLoading(false)
       return
     }
-
     setProject(p || null)
 
-    // 2) Unidades
+    // 2) Etapas modelo da obra (stages)
+    const { data: st, error: stErr } = await supabase
+      .from('stages')
+      .select('id, name, position, is_active, project_id, created_at')
+      .eq('project_id', projectId)
+      .order('position', { ascending: true, nullsFirst: true })
+      .order('created_at', { ascending: true })
+
+    if (stErr) {
+      alert(`Erro ao carregar etapas da obra: ${stErr.message}`)
+      setStageTemplates([])
+    } else {
+      setStageTemplates(Array.isArray(st) ? st : [])
+    }
+
+    // 3) Unidades
     const { data: uRows, error: uErr } = await supabase
       .from('units')
       .select('id, project_id, identifier, status, progress, created_at')
@@ -131,11 +208,19 @@ export default function ObraDetalhePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, projectId])
 
+  const activeStages = useMemo(() => {
+    return (stageTemplates || []).filter((s) => s.is_active !== false)
+  }, [stageTemplates])
+
+  const stagesForList = useMemo(() => {
+    if (showArchivedStages) return stageTemplates
+    return stageTemplates.filter((s) => s.is_active !== false)
+  }, [stageTemplates, showArchivedStages])
+
   const stats = useMemo(() => {
     const counts = { pending: 0, in_progress: 0, done: 0 }
     let sum = 0
     let total = 0
-
     for (const u of units) {
       const st = u.status || 'pending'
       if (counts[st] === undefined) counts[st] = 0
@@ -143,36 +228,24 @@ export default function ObraDetalhePage() {
       sum += clampPct(u.progress)
       total += 1
     }
-
     const avg = total > 0 ? sum / total : 0
     return { counts, total, avg }
   }, [units])
 
   const filteredUnits = useMemo(() => {
     const q = search.trim().toLowerCase()
-
     let list = [...(units || [])]
 
-    // filtro status
-    if (statusFilter !== 'all') {
-      list = list.filter((u) => (u.status || 'pending') === statusFilter)
-    }
+    if (statusFilter !== 'all') list = list.filter((u) => (u.status || 'pending') === statusFilter)
+    if (q) list = list.filter((u) => includesText(u.identifier, q))
 
-    // busca (por identifier)
-    if (q) {
-      list = list.filter((u) => includesText(u.identifier, q))
-    }
-
-    // ordenação
     list.sort((a, b) => {
       const ai = safeStr(a.identifier)
       const bi = safeStr(b.identifier)
-
       if (sortBy === 'identifier_asc') return ai.localeCompare(bi, 'pt-BR', { numeric: true })
       if (sortBy === 'identifier_desc') return bi.localeCompare(ai, 'pt-BR', { numeric: true })
       if (sortBy === 'progress_desc') return clampPct(b.progress) - clampPct(a.progress)
       if (sortBy === 'progress_asc') return clampPct(a.progress) - clampPct(b.progress)
-
       return ai.localeCompare(bi, 'pt-BR', { numeric: true })
     })
 
@@ -192,6 +265,225 @@ export default function ObraDetalhePage() {
     }
     await loadData()
   }
+
+  // ====== ETAPAS (MODELO DA OBRA) ======
+
+  async function createStageTemplate(name) {
+    const n = safeStr(name).trim()
+    if (!n) return
+
+    // position: último + 1
+    const maxPos = (stageTemplates || []).reduce((m, s) => {
+      const p = Number(s.position)
+      if (!Number.isFinite(p)) return m
+      return Math.max(m, p)
+    }, 0)
+
+    const payload = {
+      project_id: projectId,
+      name: n,
+      position: maxPos + 1,
+      is_active: true,
+    }
+
+    const { error } = await supabase.from('stages').insert(payload)
+    if (error) {
+      alert(`Erro ao criar etapa: ${error.message}`)
+      return
+    }
+    setNewStageName('')
+    await loadData()
+  }
+
+  async function bulkAddStagesFromLines() {
+    const lines = safeStr(bulkStageLines)
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean)
+
+    if (lines.length === 0) {
+      alert('Digite pelo menos 1 etapa (uma por linha).')
+      return
+    }
+
+    // começa do último position + 1
+    const maxPos = (stageTemplates || []).reduce((m, s) => {
+      const p = Number(s.position)
+      if (!Number.isFinite(p)) return m
+      return Math.max(m, p)
+    }, 0)
+
+    const rows = lines.map((name, idx) => ({
+      project_id: projectId,
+      name,
+      position: maxPos + 1 + idx,
+      is_active: true,
+    }))
+
+    setStagesBusy(true)
+    try {
+      const B = 200
+      for (let i = 0; i < rows.length; i += B) {
+        const chunk = rows.slice(i, i + B)
+        const { error } = await supabase.from('stages').insert(chunk)
+        if (error) {
+          alert(`Erro ao adicionar etapas: ${error.message}`)
+          return
+        }
+      }
+
+      setBulkStageLines('')
+      await loadData()
+    } finally {
+      setStagesBusy(false)
+    }
+  }
+
+  async function updateStageName(stageId, newName) {
+    const n = safeStr(newName).trim()
+    if (!n) {
+      alert('Nome da etapa não pode ficar vazio.')
+      return
+    }
+
+    const { error } = await supabase.from('stages').update({ name: n }).eq('id', stageId)
+    if (error) {
+      alert(`Erro ao salvar nome: ${error.message}`)
+      return
+    }
+    await loadData()
+  }
+
+  async function moveStage(stageId, dir) {
+    // dir = -1 (up) ou +1 (down)
+    const list = [...stageTemplates].sort((a, b) => {
+      const ap = Number(a.position); const bp = Number(b.position)
+      if (!Number.isFinite(ap) && !Number.isFinite(bp)) return 0
+      if (!Number.isFinite(ap)) return 1
+      if (!Number.isFinite(bp)) return -1
+      return ap - bp
+    })
+
+    const idx = list.findIndex((s) => s.id === stageId)
+    if (idx === -1) return
+    const j = idx + dir
+    if (j < 0 || j >= list.length) return
+
+    const a = list[idx]
+    const b = list[j]
+
+    const pa = Number.isFinite(Number(a.position)) ? Number(a.position) : idx + 1
+    const pb = Number.isFinite(Number(b.position)) ? Number(b.position) : j + 1
+
+    setStagesBusy(true)
+    try {
+      const { error: e1 } = await supabase.from('stages').update({ position: pb }).eq('id', a.id)
+      if (e1) {
+        alert(`Erro ao reordenar: ${e1.message}`)
+        return
+      }
+      const { error: e2 } = await supabase.from('stages').update({ position: pa }).eq('id', b.id)
+      if (e2) {
+        alert(`Erro ao reordenar: ${e2.message}`)
+        return
+      }
+      await loadData()
+    } finally {
+      setStagesBusy(false)
+    }
+  }
+
+  async function archiveStage(stageId, isActiveNow) {
+    const next = !isActiveNow ? true : false
+    const label = next ? 'reativar' : 'arquivar'
+    const ok = window.confirm(`Confirmar ${label} esta etapa?`)
+    if (!ok) return
+
+    const { error } = await supabase.from('stages').update({ is_active: next }).eq('id', stageId)
+    if (error) {
+      alert(`Erro ao atualizar etapa: ${error.message}`)
+      return
+    }
+    await loadData()
+  }
+
+  // ====== APLICAR ETAPAS ÀS UNIDADES (SEM ETAPAS) ======
+
+  async function applyStagesToUnitsMissing(unitIds) {
+    // Puxa quais unidades já têm pelo menos 1 unit_stage
+    const ids = unitIds.filter(Boolean)
+    if (ids.length === 0) return { created: 0, affectedUnits: 0 }
+
+    const stageIds = activeStages.map((s) => s.id)
+    if (stageIds.length === 0) {
+      alert('Você ainda não cadastrou etapas para esta obra. Abra "Etapas da obra" e crie as etapas primeiro.')
+      return { created: 0, affectedUnits: 0 }
+    }
+
+    const { data: existing, error } = await supabase
+      .from('unit_stages')
+      .select('unit_id')
+      .in('unit_id', ids)
+      .limit(100000)
+
+    if (error) {
+      alert(`Erro ao verificar etapas existentes: ${error.message}`)
+      return { created: 0, affectedUnits: 0 }
+    }
+
+    const has = new Set((existing || []).map((r) => safeStr(r.unit_id)))
+    const missing = ids.filter((uid) => !has.has(safeStr(uid)))
+
+    if (missing.length === 0) {
+      return { created: 0, affectedUnits: 0 }
+    }
+
+    // monta inserts
+    const rows = []
+    for (const uid of missing) {
+      for (const sid of stageIds) {
+        rows.push({
+          unit_id: uid,
+          stage_id: sid,
+          status: 'pending',
+        })
+      }
+    }
+
+    // insere em lotes
+    let inserted = 0
+    const B = 500
+    for (let i = 0; i < rows.length; i += B) {
+      const chunk = rows.slice(i, i + B)
+      const { error: insErr } = await supabase.from('unit_stages').insert(chunk)
+      if (insErr) {
+        alert(`Erro ao criar etapas nas unidades: ${insErr.message}`)
+        break
+      }
+      inserted += chunk.length
+    }
+
+    return { created: inserted, affectedUnits: missing.length }
+  }
+
+  async function applyStagesToAllExistingMissing() {
+    const ok = window.confirm(
+      `Aplicar o modelo de etapas para TODAS as unidades desta obra que ainda não têm etapas?\n\nIsso não mexe nas unidades que já têm etapas.`
+    )
+    if (!ok) return
+
+    setStagesBusy(true)
+    try {
+      const unitIds = (units || []).map((u) => u.id)
+      const res = await applyStagesToUnitsMissing(unitIds)
+      alert(`Aplicação concluída.\nUnidades afetadas: ${res.affectedUnits}\nRegistros criados: ${res.created}`)
+      await loadData()
+    } finally {
+      setStagesBusy(false)
+    }
+  }
+
+  // ====== GERAR UNIDADES POR PAVIMENTO ======
 
   async function generateUnitsByFloor() {
     if (!projectId) {
@@ -220,6 +512,12 @@ export default function ObraDetalhePage() {
       return
     }
 
+    // ⚠️ precisa de etapas modelo para criar unit_stages automaticamente
+    if (activeStages.length === 0) {
+      alert('Antes de gerar unidades, cadastre as etapas da obra (modelo). Clique em "Etapas da obra".')
+      return
+    }
+
     // gera identifiers
     const identifiers = []
     for (let f = start; f <= end; f++) {
@@ -245,7 +543,7 @@ export default function ObraDetalhePage() {
     try {
       setBulkBusy(true)
 
-      // 1) inserir units (em lotes)
+      // 1) inserir units (lotes)
       const payloadUnits = toCreate.map((identifier) => ({
         project_id: projectId,
         identifier,
@@ -258,11 +556,7 @@ export default function ObraDetalhePage() {
 
       for (let i = 0; i < payloadUnits.length; i += BATCH) {
         const chunk = payloadUnits.slice(i, i + BATCH)
-        const { data, error } = await supabase
-          .from('units')
-          .insert(chunk)
-          .select('id, identifier')
-
+        const { data, error } = await supabase.from('units').insert(chunk).select('id, identifier')
         if (error) {
           alert(`Erro ao criar unidades: ${error.message}`)
           return
@@ -270,50 +564,45 @@ export default function ObraDetalhePage() {
         if (Array.isArray(data)) created.push(...data)
       }
 
-      // 2) opcional: criar unit_stages
-      if (bulkCreateStages && created.length > 0) {
-        const { data: stagesData, error: stErr } = await supabase
-          .from('stages')
-          .select('id')
-          .order('id', { ascending: true })
-
-        if (stErr) {
-          alert(`Unidades criadas, mas erro ao carregar etapas: ${stErr.message}`)
-        } else {
-          const stageIds = (stagesData || []).map((s) => s.id)
-          if (stageIds.length > 0) {
-            const rows = []
-            for (const u of created) {
-              for (const sid of stageIds) {
-                rows.push({
-                  unit_id: u.id,
-                  stage_id: sid,
-                  status: 'pending',
-                  progress: 0,
-                })
-              }
-            }
-
-            const B2 = 500
-            for (let i = 0; i < rows.length; i += B2) {
-              const chunk = rows.slice(i, i + B2)
-              const { error: usErr } = await supabase.from('unit_stages').insert(chunk)
-              if (usErr) {
-                alert(`Unidades criadas, mas erro ao criar etapas: ${usErr.message}`)
-                break
-              }
-            }
-          }
+      // 2) cria unit_stages para as unidades criadas
+      const stageIds = activeStages.map((s) => s.id)
+      const rows = []
+      for (const u of created) {
+        for (const sid of stageIds) {
+          rows.push({ unit_id: u.id, stage_id: sid, status: 'pending' })
         }
       }
 
-      alert(`Criadas ${created.length} unidades.`)
+      const B2 = 500
+      for (let i = 0; i < rows.length; i += B2) {
+        const chunk = rows.slice(i, i + B2)
+        const { error: usErr } = await supabase.from('unit_stages').insert(chunk)
+        if (usErr) {
+          alert(`Unidades criadas, mas erro ao criar etapas: ${usErr.message}`)
+          break
+        }
+      }
+
+      // 3) opcional: aplica para unidades antigas sem etapas
+      if (bulkApplyStagesToExistingMissing) {
+        const allUnitIds = [...(units || []).map((u) => u.id), ...created.map((x) => x.id)]
+        const res = await applyStagesToUnitsMissing(allUnitIds)
+        // obs: isso vai “pegar” também as criadas (mas como já criamos, elas já têm e serão ignoradas)
+        if (res.affectedUnits > 0) {
+          // só informativo
+          console.log('Applied stages to missing:', res)
+        }
+      }
+
+      alert(`Criadas ${created.length} unidades com etapas.`)
       setBulkOpen(false)
       await loadData()
     } finally {
       setBulkBusy(false)
     }
   }
+
+  // ====== RENDER ======
 
   if (loading) {
     return (
@@ -348,10 +637,6 @@ export default function ObraDetalhePage() {
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Obra</div>
           <h1 style={{ margin: 0 }}>{project.name || '(Sem nome)'}</h1>
 
-          <div style={{ color: '#444', marginTop: 6 }}>
-            Usuário logado: <b>{userEmail}</b>
-          </div>
-
           {(project.client_name || project.city) && (
             <div style={{ marginTop: 10, color: '#444' }}>
               {project.client_name ? <b>{project.client_name}</b> : null}
@@ -361,11 +646,29 @@ export default function ObraDetalhePage() {
           )}
 
           {project.address ? <div style={{ marginTop: 4, color: '#666' }}>{project.address}</div> : null}
-
           {project.description ? <div style={{ marginTop: 8, color: '#777' }}>{project.description}</div> : null}
+
+          <div style={{ color: '#444', marginTop: 10 }}>
+            Etapas da obra (modelo): <b>{activeStages.length}</b>
+            {activeStages.length === 0 ? <span style={{ color: '#b00020' }}> (cadastre antes de gerar unidades)</span> : null}
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setStagesOpen(true)}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: '#fff',
+              cursor: 'pointer',
+              fontWeight: 900,
+            }}
+          >
+            Etapas da obra
+          </button>
+
           <button
             onClick={() => setBulkOpen(true)}
             style={{
@@ -375,7 +678,7 @@ export default function ObraDetalhePage() {
               background: '#111',
               color: '#fff',
               cursor: 'pointer',
-              fontWeight: 800,
+              fontWeight: 900,
             }}
           >
             + Gerar unidades
@@ -394,7 +697,6 @@ export default function ObraDetalhePage() {
             <span>Progresso médio</span>
             <b>{formatPct(stats.avg)}</b>
           </div>
-
           <div style={{ height: 10, background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
             <div style={{ width: `${pct}%`, height: '100%', background: '#111', opacity: 0.12 }} />
           </div>
@@ -444,7 +746,7 @@ export default function ObraDetalhePage() {
             border: '1px solid #ddd',
             background: '#fff',
             cursor: 'pointer',
-            fontWeight: 700,
+            fontWeight: 800,
           }}
         >
           <option value="all">Todas</option>
@@ -462,7 +764,7 @@ export default function ObraDetalhePage() {
             border: '1px solid #ddd',
             background: '#fff',
             cursor: 'pointer',
-            fontWeight: 700,
+            fontWeight: 800,
           }}
           title="Ordenar"
         >
@@ -481,7 +783,7 @@ export default function ObraDetalhePage() {
               border: '1px solid #ddd',
               background: '#fff',
               cursor: 'pointer',
-              fontWeight: 700,
+              fontWeight: 800,
             }}
           >
             Limpar
@@ -493,7 +795,7 @@ export default function ObraDetalhePage() {
         </div>
       </div>
 
-      {/* Lista */}
+      {/* Lista unidades */}
       <div style={{ marginTop: 14, maxWidth: 1100, display: 'grid', gap: 10 }}>
         {filteredUnits.length === 0 ? (
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
@@ -546,7 +848,7 @@ export default function ObraDetalhePage() {
                           background: '#111',
                           color: '#fff',
                           cursor: 'pointer',
-                          fontWeight: 800,
+                          fontWeight: 900,
                         }}
                       >
                         Abrir →
@@ -576,161 +878,321 @@ export default function ObraDetalhePage() {
         )}
       </div>
 
-      {/* MODAL: Gerar unidades */}
-      {bulkOpen ? (
-        <div
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !bulkBusy) setBulkOpen(false)
-          }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.35)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            zIndex: 1000,
-          }}
-        >
-          <div
-            style={{
-              width: 'min(760px, 100%)',
-              background: '#fff',
-              borderRadius: 16,
-              border: '1px solid #eee',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
-              padding: 16,
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 900 }}>Gerar unidades por pavimento</div>
+      {/* MODAL: Etapas da obra */}
+      <Modal open={stagesOpen} title="Etapas da obra (modelo)" onClose={() => setStagesOpen(false)} busy={stagesBusy}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              value={newStageName}
+              onChange={(e) => setNewStageName(e.target.value)}
+              placeholder="Nova etapa (ex: Preparação, Impermeabilização...)"
+              style={{
+                width: 'min(520px, 100%)',
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+              }}
+              disabled={stagesBusy}
+            />
+
+            <button
+              onClick={() => createStageTemplate(newStageName)}
+              disabled={stagesBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Adicionar
+            </button>
+
+            <button
+              onClick={applyStagesToAllExistingMissing}
+              disabled={stagesBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+              title="Cria etapas para as unidades que estão sem etapas"
+            >
+              Aplicar nas unidades sem etapas
+            </button>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={showArchivedStages}
+                onChange={(e) => setShowArchivedStages(e.target.checked)}
+                disabled={stagesBusy}
+              />
+              <span style={{ fontSize: 13, color: '#444' }}>Mostrar arquivadas</span>
+            </label>
+          </div>
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 13, color: '#444', fontWeight: 900 }}>Adicionar várias etapas (1 por linha)</div>
+            <textarea
+              value={bulkStageLines}
+              onChange={(e) => setBulkStageLines(e.target.value)}
+              placeholder={`Ex:\nPreparação\nImpermeabilização\nAssentamento\nRejunte\nTeste\nEntrega`}
+              style={{
+                width: '100%',
+                minHeight: 120,
+                padding: 12,
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+                resize: 'vertical',
+              }}
+              disabled={stagesBusy}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
-                onClick={() => !bulkBusy && setBulkOpen(false)}
+                onClick={bulkAddStagesFromLines}
+                disabled={stagesBusy}
                 style={{
-                  border: '1px solid #ddd',
-                  background: '#fff',
+                  padding: '10px 12px',
                   borderRadius: 12,
-                  padding: '8px 10px',
-                  cursor: bulkBusy ? 'not-allowed' : 'pointer',
-                  fontWeight: 800,
+                  border: '1px solid #ddd',
+                  background: '#111',
+                  color: '#fff',
+                  cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
                 }}
-                title="Fechar"
-                disabled={bulkBusy}
               >
-                ✕
+                Adicionar lista
               </button>
             </div>
+          </div>
 
-            <div style={{ marginTop: 12, display: 'grid', gap: 12 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: '#444' }}>Pavimento inicial</div>
-                  <input
-                    type="number"
-                    value={bulkFloorStart}
-                    onChange={(e) => setBulkFloorStart(e.target.value)}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd' }}
-                    disabled={bulkBusy}
-                  />
-                </div>
+          <div style={{ fontSize: 13, color: '#666' }}>
+            Total de etapas ativas: <b>{activeStages.length}</b>
+          </div>
 
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: '#444' }}>Pavimento final</div>
-                  <input
-                    type="number"
-                    value={bulkFloorEnd}
-                    onChange={(e) => setBulkFloorEnd(e.target.value)}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd' }}
-                    disabled={bulkBusy}
-                  />
-                </div>
-
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: '#444' }}>Unidades por pavimento</div>
-                  <input
-                    type="number"
-                    value={bulkUnitsPerFloor}
-                    onChange={(e) => setBulkUnitsPerFloor(e.target.value)}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd' }}
-                    disabled={bulkBusy}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-                <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: bulkBusy ? 'not-allowed' : 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={bulkPad2Digits}
-                    onChange={(e) => setBulkPad2Digits(e.target.checked)}
-                    disabled={bulkBusy}
-                  />
-                  <span style={{ fontSize: 13, color: '#444' }}>
-                    Usar 2 dígitos (01, 02...) → Ex: 3 + 01 = <b>301</b>
-                  </span>
-                </label>
-
-                <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: bulkBusy ? 'not-allowed' : 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={bulkCreateStages}
-                    onChange={(e) => setBulkCreateStages(e.target.checked)}
-                    disabled={bulkBusy}
-                  />
-                  <span style={{ fontSize: 13, color: '#444' }}>Criar etapas automaticamente (unit_stages)</span>
-                </label>
-              </div>
-
-              <div style={{ fontSize: 13, color: '#666' }}>
-                Exemplo (primeiras):{' '}
-                <b>
-                  {(() => {
-                    const start = Number(bulkFloorStart) || 0
-                    const per = Number(bulkUnitsPerFloor) || 0
-                    const ex = []
-                    for (let i = 1; i <= Math.min(6, per); i++) ex.push(makeIdentifier(start, i, bulkPad2Digits))
-                    return ex.join(', ')
-                  })()}
-                </b>
-              </div>
-
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                <button
-                  onClick={() => setBulkOpen(false)}
-                  disabled={bulkBusy}
+          <div style={{ display: 'grid', gap: 10 }}>
+            {stagesForList.length === 0 ? (
+              <div style={{ color: '#666' }}>Nenhuma etapa cadastrada.</div>
+            ) : (
+              stagesForList.map((s, idx) => (
+                <div
+                  key={s.id}
                   style={{
-                    padding: '10px 12px',
+                    border: '1px solid #eee',
                     borderRadius: 12,
-                    border: '1px solid #ddd',
-                    background: '#fff',
-                    cursor: bulkBusy ? 'not-allowed' : 'pointer',
-                    fontWeight: 800,
+                    padding: 12,
+                    display: 'grid',
+                    gap: 8,
+                    background: s.is_active === false ? '#fafafa' : '#fff',
                   }}
                 >
-                  Cancelar
-                </button>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>#{idx + 1}</div>
+                      <input
+                        defaultValue={s.name || ''}
+                        onBlur={(e) => updateStageName(s.id, e.target.value)}
+                        disabled={stagesBusy}
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          outline: 'none',
+                          minWidth: 320,
+                          maxWidth: '100%',
+                        }}
+                      />
+                      {s.is_active === false ? (
+                        <span style={{ fontSize: 12, color: '#b00020', fontWeight: 900 }}>ARQUIVADA</span>
+                      ) : null}
+                    </div>
 
-                <button
-                  onClick={generateUnitsByFloor}
-                  disabled={bulkBusy}
-                  style={{
-                    padding: '10px 12px',
-                    borderRadius: 12,
-                    border: '1px solid #ddd',
-                    background: '#111',
-                    color: '#fff',
-                    cursor: bulkBusy ? 'not-allowed' : 'pointer',
-                    fontWeight: 900,
-                  }}
-                >
-                  {bulkBusy ? 'Gerando…' : 'Gerar unidades'}
-                </button>
-              </div>
-            </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => moveStage(s.id, -1)}
+                        disabled={stagesBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 900,
+                        }}
+                        title="Subir"
+                      >
+                        ↑
+                      </button>
+
+                      <button
+                        onClick={() => moveStage(s.id, +1)}
+                        disabled={stagesBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 900,
+                        }}
+                        title="Descer"
+                      >
+                        ↓
+                      </button>
+
+                      <button
+                        onClick={() => archiveStage(s.id, s.is_active !== false)}
+                        disabled={stagesBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 900,
+                        }}
+                      >
+                        {s.is_active === false ? 'Reativar' : 'Arquivar'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 12, color: '#777' }}>
+                    Dica: o nome salva ao sair do campo (blur). A ordem é usada para listar etapas na unidade.
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
-      ) : null}
+      </Modal>
+
+      {/* MODAL: Gerar unidades */}
+      <Modal open={bulkOpen} title="Gerar unidades por pavimento" onClose={() => setBulkOpen(false)} busy={bulkBusy}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 13, color: '#444' }}>
+            Etapas do modelo ativas: <b>{activeStages.length}</b>{' '}
+            {activeStages.length === 0 ? (
+              <span style={{ color: '#b00020', fontWeight: 900 }}> (cadastre etapas antes)</span>
+            ) : null}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Pavimento inicial</div>
+              <input
+                type="number"
+                value={bulkFloorStart}
+                onChange={(e) => setBulkFloorStart(e.target.value)}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd' }}
+                disabled={bulkBusy}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Pavimento final</div>
+              <input
+                type="number"
+                value={bulkFloorEnd}
+                onChange={(e) => setBulkFloorEnd(e.target.value)}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd' }}
+                disabled={bulkBusy}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Unidades por pavimento</div>
+              <input
+                type="number"
+                value={bulkUnitsPerFloor}
+                onChange={(e) => setBulkUnitsPerFloor(e.target.value)}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd' }}
+                disabled={bulkBusy}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: bulkBusy ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={bulkPad2Digits}
+                onChange={(e) => setBulkPad2Digits(e.target.checked)}
+                disabled={bulkBusy}
+              />
+              <span style={{ fontSize: 13, color: '#444' }}>
+                Usar 2 dígitos (01, 02...) → Ex: 3 + 01 = <b>301</b>
+              </span>
+            </label>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: bulkBusy ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={bulkApplyStagesToExistingMissing}
+                onChange={(e) => setBulkApplyStagesToExistingMissing(e.target.checked)}
+                disabled={bulkBusy}
+              />
+              <span style={{ fontSize: 13, color: '#444' }}>Também aplicar etapas em unidades antigas sem etapas</span>
+            </label>
+          </div>
+
+          <div style={{ fontSize: 13, color: '#666' }}>
+            Exemplo (primeiras):{' '}
+            <b>
+              {(() => {
+                const start = Number(bulkFloorStart) || 0
+                const per = Number(bulkUnitsPerFloor) || 0
+                const ex = []
+                for (let i = 1; i <= Math.min(6, per); i++) ex.push(makeIdentifier(start, i, bulkPad2Digits))
+                return ex.join(', ')
+              })()}
+            </b>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => setBulkOpen(false)}
+              disabled={bulkBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: bulkBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              onClick={generateUnitsByFloor}
+              disabled={bulkBusy || activeStages.length === 0}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: activeStages.length === 0 ? '#777' : '#111',
+                color: '#fff',
+                cursor: bulkBusy || activeStages.length === 0 ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+              title={activeStages.length === 0 ? 'Cadastre etapas da obra antes' : ''}
+            >
+              {bulkBusy ? 'Gerando…' : 'Gerar unidades + etapas'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }
