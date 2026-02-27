@@ -28,6 +28,64 @@ function randomId() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16)
 }
 
+function clampInt(n, min, max) {
+  const v = Number(n)
+  if (!Number.isFinite(v)) return min
+  return Math.max(min, Math.min(max, Math.floor(v)))
+}
+
+function Modal({ open, title, onClose, children, busy }) {
+  if (!open) return null
+  return (
+    <div
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose?.()
+      }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        zIndex: 1000,
+      }}
+    >
+      <div
+        style={{
+          width: 'min(940px, 100%)',
+          background: '#fff',
+          borderRadius: 16,
+          border: '1px solid #eee',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+          padding: 16,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
+          <button
+            onClick={() => !busy && onClose?.()}
+            style={{
+              border: '1px solid #ddd',
+              background: '#fff',
+              borderRadius: 12,
+              padding: '8px 10px',
+              cursor: busy ? 'not-allowed' : 'pointer',
+              fontWeight: 800,
+            }}
+            title="Fechar"
+            disabled={busy}
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ marginTop: 12 }}>{children}</div>
+      </div>
+    </div>
+  )
+}
+
 export default function UnidadePage() {
   const router = useRouter()
   const { id } = router.query
@@ -42,36 +100,21 @@ export default function UnidadePage() {
   const [user, setUser] = useState(null)
 
   const [unit, setUnit] = useState(null)
-  const [stages, setStages] = useState([])
+  const [stages, setStages] = useState([]) // unit_stages + stages
+  const [stageCatalog, setStageCatalog] = useState([]) // stages (modelo da obra)
 
   const [signedUrlByPhotoId, setSignedUrlByPhotoId] = useState({})
   const [busyStageId, setBusyStageId] = useState(null)
   const [uploadingStageId, setUploadingStageId] = useState(null)
 
-  // ✅ novo: controla qual etapa está com menu “Alterar” aberto
+  // UI do status
   const [editingStatusStageId, setEditingStatusStageId] = useState(null)
 
-  // ✅ novo: indicador de upload por arquivo (por etapa)
-  // formato: { [unitStageId]: { [localKey]: { name, status: 'uploading'|'done'|'error' } } }
-  const [uploadingByStage, setUploadingByStage] = useState({})
-
-  function setFileUploading(unitStageId, localKey, payload) {
-    setUploadingByStage((prev) => ({
-      ...prev,
-      [unitStageId]: {
-        ...(prev?.[unitStageId] || {}),
-        [localKey]: payload,
-      },
-    }))
-  }
-
-  function removeFileUploading(unitStageId, localKey) {
-    setUploadingByStage((prev) => {
-      const stageMap = { ...(prev?.[unitStageId] || {}) }
-      delete stageMap[localKey]
-      return { ...prev, [unitStageId]: stageMap }
-    })
-  }
+  // ✅ NOVO: modal gerenciar etapas da unidade
+  const [manageOpen, setManageOpen] = useState(false)
+  const [manageBusy, setManageBusy] = useState(false)
+  const [addStageId, setAddStageId] = useState('') // stage_id para adicionar
+  const [createStageName, setCreateStageName] = useState('') // criar novo "stage" (modelo) e adicionar
 
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
@@ -101,6 +144,25 @@ export default function UnidadePage() {
     }
   }
 
+  function normalizeStages(stageRows) {
+    const normalized = (stageRows || []).map((r) => ({
+      ...r,
+      stage_name: r.custom_name || r.stages?.name || '(Sem nome)',
+      stage_template_name: r.stages?.name || '(Sem nome)',
+      photos: Array.isArray(r.unit_stage_photos) ? r.unit_stage_photos : [],
+      order_index: Number.isFinite(Number(r.order_index)) ? Number(r.order_index) : 1,
+    }))
+
+    normalized.sort((a, b) => {
+      const ao = Number(a.order_index || 0)
+      const bo = Number(b.order_index || 0)
+      if (ao !== bo) return ao - bo
+      return safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR', { numeric: true })
+    })
+
+    return normalized
+  }
+
   async function loadAll() {
     if (!router.isReady) return
     if (!unitId) return
@@ -113,7 +175,7 @@ export default function UnidadePage() {
     // Unidade
     const { data: unitData, error: unitErr } = await supabase
       .from('units')
-      .select('id, identifier, project_id, created_at')
+      .select('id, identifier, project_id')
       .eq('id', unitId)
       .maybeSingle()
 
@@ -135,9 +197,22 @@ export default function UnidadePage() {
 
     setUnit(unitData)
 
-    // ✅ Etapas + fotos
-    // ❌ REMOVIDO: .order('created_at') porque unit_stages.created_at não existe no seu banco
-    // ✅ ORDENAR com colunas que existem: stage_id e id
+    // Catálogo de etapas (modelo da obra)
+    const { data: catalog, error: cErr } = await supabase
+      .from('stages')
+      .select('id, name, order_index, is_active, project_id')
+      .eq('project_id', unitData.project_id)
+      .order('order_index', { ascending: true })
+      .order('name', { ascending: true })
+
+    if (!cErr) {
+      setStageCatalog(Array.isArray(catalog) ? catalog.filter((s) => s.is_active !== false) : [])
+    } else {
+      console.error('Erro ao carregar catálogo de etapas:', cErr)
+      setStageCatalog([])
+    }
+
+    // Etapas da unidade + fotos
     const { data: stageRows, error: stageErr } = await supabase
       .from('unit_stages')
       .select(
@@ -149,13 +224,13 @@ export default function UnidadePage() {
         started_at,
         finished_at,
         notes,
+        custom_name,
+        order_index,
         stages ( id, name ),
         unit_stage_photos ( id, path, caption, kind, created_at, user_id )
       `
       )
       .eq('unit_id', unitId)
-      .order('stage_id', { ascending: true })
-      .order('id', { ascending: true })
 
     if (stageErr) {
       console.error('Erro ao carregar etapas:', stageErr)
@@ -165,12 +240,7 @@ export default function UnidadePage() {
       return
     }
 
-    const normalized = (stageRows || []).map((r) => ({
-      ...r,
-      stage_name: r.stages?.name || '(Sem nome)',
-      photos: Array.isArray(r.unit_stage_photos) ? r.unit_stage_photos : [],
-    }))
-
+    const normalized = normalizeStages(stageRows || [])
     setStages(normalized)
     await hydrateSignedUrls(normalized)
 
@@ -181,6 +251,11 @@ export default function UnidadePage() {
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, unitId])
+
+  function nextOrderIndex() {
+    const max = (stages || []).reduce((m, s) => Math.max(m, Number(s.order_index || 0)), 0)
+    return max + 1
+  }
 
   async function updateStageStatus(unitStageId, newStatus) {
     try {
@@ -252,69 +327,8 @@ export default function UnidadePage() {
     }
   }
 
-  // ✅ upload de UMA foto (usado pelo upload múltiplo)
-  async function uploadOnePhoto(unitStageId, file, caption) {
-    if (!file) return null
-    if (!user?.id) {
-      alert('Usuário não autenticado.')
-      return null
-    }
-
-    const ext = extFromName(file.name)
-    const path = `units/${unitId}/unit_stages/${unitStageId}/${randomId()}.${ext}`
-
-    const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
-      cacheControl: '3600',
-      upsert: false,
-      contentType: file.type || undefined,
-    })
-
-    if (upErr) {
-      throw new Error(upErr.message)
-    }
-
-    const { data: photoRow, error: insErr } = await supabase
-      .from('unit_stage_photos')
-      .insert({
-        unit_stage_id: unitStageId,
-        user_id: user.id,
-        kind: 'image',
-        path,
-        caption: safeStr(caption || ''),
-      })
-      .select('id, path, caption, kind, created_at, user_id')
-      .maybeSingle()
-
-    if (insErr) {
-      throw new Error(insErr.message)
-    }
-
-    await supabase.from('unit_stage_logs').insert({
-      unit_stage_id: unitStageId,
-      user_id: user.id,
-      action: 'photo_added',
-      old_value: null,
-      new_value: {
-        photo_id: photoRow?.id || null,
-        path,
-        kind: 'image',
-        caption: safeStr(caption || ''),
-      },
-    })
-
-    if (photoRow?.id && path) {
-      const { data: signed, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60)
-      if (!sErr && signed?.signedUrl) {
-        setSignedUrlByPhotoId((prev) => ({ ...prev, [photoRow.id]: signed.signedUrl }))
-      }
-    }
-
-    return photoRow
-  }
-
-  // ✅ upload MÚLTIPLO: seleciona várias imagens e envia uma a uma
-  async function onUploadPhotos(unitStageId, files) {
-    if (!files || files.length === 0) return
+  async function onUploadPhoto(unitStageId, file, caption) {
+    if (!file) return
     if (!user?.id) {
       alert('Usuário não autenticado.')
       return
@@ -323,21 +337,54 @@ export default function UnidadePage() {
     try {
       setUploadingStageId(unitStageId)
 
-      // legenda única opcional (vale pra todas as fotos) — simples e rápido
-      const caption = window.prompt('Legenda (opcional, aplica em todas):', '') || ''
+      const ext = extFromName(file.name)
+      const path = `units/${unitId}/unit_stages/${unitStageId}/${randomId()}.${ext}`
 
-      for (const file of Array.from(files)) {
-        const localKey = `${file.name}-${file.size}-${Date.now()}`
-        setFileUploading(unitStageId, localKey, { name: file.name, status: 'uploading' })
+      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type || undefined,
+      })
 
-        try {
-          await uploadOnePhoto(unitStageId, file, caption)
-          setFileUploading(unitStageId, localKey, { name: file.name, status: 'done' })
-          // remove da lista após 1.2s pra não poluir
-          setTimeout(() => removeFileUploading(unitStageId, localKey), 1200)
-        } catch (e) {
-          console.error(e)
-          setFileUploading(unitStageId, localKey, { name: file.name, status: 'error' })
+      if (upErr) {
+        alert(`Erro no upload: ${upErr.message}`)
+        return
+      }
+
+      const { data: photoRow, error: insErr } = await supabase
+        .from('unit_stage_photos')
+        .insert({
+          unit_stage_id: unitStageId,
+          user_id: user.id,
+          kind: 'image',
+          path,
+          caption: safeStr(caption || ''),
+        })
+        .select('id, path, caption, kind, created_at, user_id')
+        .maybeSingle()
+
+      if (insErr) {
+        alert(`Upload ok, mas erro ao salvar no banco: ${insErr.message}`)
+        return
+      }
+
+      await supabase.from('unit_stage_logs').insert({
+        unit_stage_id: unitStageId,
+        user_id: user.id,
+        action: 'photo_added',
+        old_value: null,
+        new_value: {
+          photo_id: photoRow?.id || null,
+          path,
+          kind: 'image',
+          caption: safeStr(caption || ''),
+        },
+      })
+
+      if (photoRow?.id && path) {
+        const { data: signed, error: sErr } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 60)
+        if (!sErr && signed?.signedUrl) {
+          setSignedUrlByPhotoId((prev) => ({ ...prev, [photoRow.id]: signed.signedUrl }))
         }
       }
 
@@ -347,60 +394,165 @@ export default function UnidadePage() {
     }
   }
 
-  // ✅ EXCLUIR FOTO: remove no Storage + remove na tabela + log
-  async function onDeletePhoto(unitStageId, photo) {
-    if (!photo?.id || !photo?.path) return
-    if (!user?.id) {
-      alert('Usuário não autenticado.')
+  // ============================
+  // ✅ CRUD ETAPAS NA UNIDADE
+  // ============================
+
+  async function addExistingStageToUnit() {
+    if (!addStageId) return
+    if (!unit?.id) return
+
+    // Evita duplicar a mesma stage_id na unidade
+    const already = stages.some((s) => safeStr(s.stage_id) === safeStr(addStageId))
+    if (already) {
+      alert('Essa etapa já existe nesta unidade.')
       return
     }
 
-    const ok = window.confirm('Tem certeza que deseja excluir esta foto?')
+    setManageBusy(true)
+    try {
+      const payload = {
+        unit_id: unit.id,
+        stage_id: addStageId,
+        status: 'pending',
+        order_index: nextOrderIndex(),
+      }
+
+      const { error } = await supabase.from('unit_stages').insert(payload)
+      if (error) {
+        alert(`Erro ao adicionar etapa: ${error.message}`)
+        return
+      }
+
+      await loadAll()
+      setAddStageId('')
+    } finally {
+      setManageBusy(false)
+    }
+  }
+
+  async function createStageTemplateAndAddToUnit() {
+    if (!unit?.project_id) return
+    const name = safeStr(createStageName).trim()
+    if (!name) return
+
+    setManageBusy(true)
+    try {
+      // cria em stages (modelo da obra)
+      const maxOrder = (stageCatalog || []).reduce((m, s) => Math.max(m, Number(s.order_index || 0)), 0)
+      const { data: stageRow, error: sErr } = await supabase
+        .from('stages')
+        .insert({
+          project_id: unit.project_id,
+          name,
+          order_index: maxOrder + 1,
+          is_active: true,
+        })
+        .select('id')
+        .maybeSingle()
+
+      if (sErr) {
+        alert(`Erro ao criar etapa no modelo: ${sErr.message}`)
+        return
+      }
+
+      const stageId = stageRow?.id
+      if (!stageId) {
+        alert('Etapa criada, mas não retornou id.')
+        return
+      }
+
+      const { error: usErr } = await supabase.from('unit_stages').insert({
+        unit_id: unit.id,
+        stage_id: stageId,
+        status: 'pending',
+        order_index: nextOrderIndex(),
+      })
+
+      if (usErr) {
+        alert(`Erro ao adicionar etapa na unidade: ${usErr.message}`)
+        return
+      }
+
+      setCreateStageName('')
+      await loadAll()
+    } finally {
+      setManageBusy(false)
+    }
+  }
+
+  async function renameUnitStage(unitStageId, customName) {
+    const n = safeStr(customName).trim()
+    setManageBusy(true)
+    try {
+      const { error } = await supabase.from('unit_stages').update({ custom_name: n || null }).eq('id', unitStageId)
+      if (error) {
+        alert(`Erro ao renomear etapa: ${error.message}`)
+        return
+      }
+      await loadAll()
+    } finally {
+      setManageBusy(false)
+    }
+  }
+
+  async function moveUnitStage(unitStageId, dir) {
+    const list = [...stages].sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0))
+    const idx = list.findIndex((s) => s.id === unitStageId)
+    if (idx === -1) return
+    const j = idx + dir
+    if (j < 0 || j >= list.length) return
+
+    const a = list[idx]
+    const b = list[j]
+    const oa = clampInt(a.order_index, 1, 1000000)
+    const ob = clampInt(b.order_index, 1, 1000000)
+
+    setManageBusy(true)
+    try {
+      const { error: e1 } = await supabase.from('unit_stages').update({ order_index: ob }).eq('id', a.id)
+      if (e1) {
+        alert(`Erro ao reordenar: ${e1.message}`)
+        return
+      }
+      const { error: e2 } = await supabase.from('unit_stages').update({ order_index: oa }).eq('id', b.id)
+      if (e2) {
+        alert(`Erro ao reordenar: ${e2.message}`)
+        return
+      }
+      await loadAll()
+    } finally {
+      setManageBusy(false)
+    }
+  }
+
+  async function deleteUnitStage(unitStageId, stageName) {
+    const ok = window.confirm(
+      `Excluir a etapa "${stageName}" desta unidade?\n\nObs: as fotos/notas dessa etapa podem ser removidas junto dependendo do seu banco.`
+    )
     if (!ok) return
 
+    setManageBusy(true)
     try {
-      setBusyStageId(unitStageId)
+      // ✅ remove fotos e logs primeiro (evita erro de FK, se existir)
+      await supabase.from('unit_stage_photos').delete().eq('unit_stage_id', unitStageId)
+      await supabase.from('unit_stage_logs').delete().eq('unit_stage_id', unitStageId)
 
-      // 1) storage delete
-      const { error: stErr } = await supabase.storage.from(BUCKET).remove([photo.path])
-      if (stErr) {
-        alert(`Erro ao excluir no storage: ${stErr.message}`)
+      const { error } = await supabase.from('unit_stages').delete().eq('id', unitStageId)
+      if (error) {
+        alert(`Erro ao excluir etapa: ${error.message}`)
         return
       }
-
-      // 2) db delete
-      const { error: dbErr } = await supabase.from('unit_stage_photos').delete().eq('id', photo.id)
-      if (dbErr) {
-        alert(`Erro ao excluir no banco: ${dbErr.message}`)
-        return
-      }
-
-      // 3) log
-      await supabase.from('unit_stage_logs').insert({
-        unit_stage_id: unitStageId,
-        user_id: user.id,
-        action: 'photo_deleted',
-        old_value: {
-          photo_id: photo.id,
-          path: photo.path,
-          kind: photo.kind || null,
-          caption: photo.caption || null,
-        },
-        new_value: null,
-      })
-
-      // 4) limpar signed url do state
-      setSignedUrlByPhotoId((prev) => {
-        const copy = { ...prev }
-        delete copy[photo.id]
-        return copy
-      })
 
       await loadAll()
     } finally {
-      setBusyStageId(null)
+      setManageBusy(false)
     }
   }
+
+  // ============================
+  // RENDER
+  // ============================
 
   if (loading) {
     return (
@@ -421,25 +573,45 @@ export default function UnidadePage() {
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Unidade</div>
           <h1 style={{ margin: 0 }}>Unidade {unit.identifier || unit.id}</h1>
         </div>
 
-        <Link href={`/obras/${unit.project_id}`}>← Voltar</Link>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setManageOpen(true)}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: '#fff',
+              cursor: 'pointer',
+              fontWeight: 900,
+            }}
+          >
+            Gerenciar etapas
+          </button>
+
+          <Link href={`/obras/${unit.project_id}`}>← Voltar</Link>
+        </div>
       </div>
 
       <hr style={{ margin: '18px 0' }} />
 
       <h2 style={{ marginTop: 0 }}>Etapas</h2>
 
-      <div style={{ display: 'grid', gap: 14, maxWidth: 980 }}>
+      {stages.length === 0 ? (
+        <div style={{ color: '#666' }}>
+          Nenhuma etapa nesta unidade. Clique em <b>Gerenciar etapas</b> para adicionar.
+        </div>
+      ) : null}
+
+      <div style={{ display: 'grid', gap: 14, maxWidth: 980, marginTop: 12 }}>
         {stages.map((s) => {
           const isBusy = busyStageId === s.id
           const isUploading = uploadingStageId === s.id
-          const uploadingMap = uploadingByStage?.[s.id] || {}
-          const uploadingItems = Object.values(uploadingMap)
 
           return (
             <div
@@ -452,10 +624,15 @@ export default function UnidadePage() {
                 boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
               }}
             >
-              {/* ✅ Header: só badge do status + botão Alterar (sem “Status: ...”) */}
+              {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>{s.stage_name}</div>
+                  {s.custom_name ? (
+                    <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
+                      Modelo: {s.stage_template_name}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'flex-end' }}>
@@ -492,7 +669,7 @@ export default function UnidadePage() {
                 </div>
               </div>
 
-              {/* ✅ Menu de troca de status (só aparece quando clicar em Alterar) */}
+              {/* Menu troca status */}
               {editingStatusStageId === s.id ? (
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button
@@ -588,17 +765,17 @@ export default function UnidadePage() {
                       fontWeight: 700,
                     }}
                   >
-                    {isUploading ? 'Enviando…' : 'Adicionar fotos'}
+                    {isUploading ? 'Enviando…' : 'Adicionar foto'}
                     <input
                       type="file"
                       accept="image/*"
-                      multiple
                       disabled={isUploading}
                       style={{ display: 'none' }}
                       onChange={async (e) => {
-                        const files = e.target.files
-                        if (!files || files.length === 0) return
-                        await onUploadPhotos(s.id, files)
+                        const file = e.target.files?.[0]
+                        if (!file) return
+                        const caption = window.prompt('Legenda (opcional):', '') || ''
+                        await onUploadPhoto(s.id, file, caption)
                         e.target.value = ''
                       }}
                     />
@@ -608,20 +785,6 @@ export default function UnidadePage() {
                     Fotos: <b>{(s.photos || []).length}</b>
                   </div>
                 </div>
-
-                {/* ✅ Indicador por arquivo */}
-                {uploadingItems.length > 0 ? (
-                  <div style={{ fontSize: 12, color: '#555', display: 'grid', gap: 4 }}>
-                    {uploadingItems.map((it) => (
-                      <div key={it.name + it.status} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <span style={{ fontWeight: 700 }}>{it.name}</span>
-                        <span style={{ color: it.status === 'error' ? '#b00020' : '#666' }}>
-                          {it.status === 'uploading' ? 'enviando…' : it.status === 'done' ? 'ok' : 'erro'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
 
                 {(s.photos || []).length > 0 ? (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
@@ -638,30 +801,8 @@ export default function UnidadePage() {
                               borderRadius: 12,
                               padding: 10,
                               background: '#fafafa',
-                              position: 'relative',
                             }}
                           >
-                            {/* ✅ botão excluir */}
-                            <button
-                              onClick={() => onDeletePhoto(s.id, p)}
-                              disabled={isBusy || isUploading}
-                              title="Excluir foto"
-                              style={{
-                                position: 'absolute',
-                                top: 8,
-                                right: 8,
-                                borderRadius: 10,
-                                border: '1px solid #ddd',
-                                background: '#fff',
-                                padding: '6px 8px',
-                                cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                                fontWeight: 900,
-                                lineHeight: 1,
-                              }}
-                            >
-                              ✕
-                            </button>
-
                             {url ? (
                               <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
                                 <img
@@ -700,7 +841,9 @@ export default function UnidadePage() {
                                   <b>{p.caption}</b>
                                 </div>
                               ) : null}
-                              <div style={{ color: '#777' }}>{p.created_at ? new Date(p.created_at).toLocaleString() : ''}</div>
+                              <div style={{ color: '#777' }}>
+                                {p.created_at ? new Date(p.created_at).toLocaleString() : ''}
+                              </div>
                             </div>
                           </div>
                         )
@@ -712,6 +855,193 @@ export default function UnidadePage() {
           )
         })}
       </div>
+
+      {/* ✅ MODAL GERENCIAR ETAPAS */}
+      <Modal open={manageOpen} title="Gerenciar etapas da unidade" onClose={() => setManageOpen(false)} busy={manageBusy}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 13, color: '#444', fontWeight: 900 }}>Adicionar etapa existente (modelo da obra)</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <select
+                value={addStageId}
+                onChange={(e) => setAddStageId(e.target.value)}
+                disabled={manageBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: 'pointer',
+                  fontWeight: 800,
+                  minWidth: 320,
+                }}
+              >
+                <option value="">Selecione uma etapa…</option>
+                {stageCatalog.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                onClick={addExistingStageToUnit}
+                disabled={manageBusy || !addStageId}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#111',
+                  color: '#fff',
+                  cursor: manageBusy || !addStageId ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
+              >
+                Adicionar na unidade
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 13, color: '#444', fontWeight: 900 }}>Criar nova etapa (no modelo) e adicionar</div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                value={createStageName}
+                onChange={(e) => setCreateStageName(e.target.value)}
+                disabled={manageBusy}
+                placeholder="Nome da nova etapa…"
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  outline: 'none',
+                  minWidth: 320,
+                }}
+              />
+
+              <button
+                onClick={createStageTemplateAndAddToUnit}
+                disabled={manageBusy || !safeStr(createStageName).trim()}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: manageBusy || !safeStr(createStageName).trim() ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
+              >
+                Criar + adicionar
+              </button>
+            </div>
+          </div>
+
+          <hr style={{ margin: '6px 0' }} />
+
+          <div style={{ fontSize: 13, color: '#444', fontWeight: 900 }}>Etapas desta unidade</div>
+
+          {stages.length === 0 ? (
+            <div style={{ color: '#666' }}>Nenhuma etapa ainda.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {stages.map((s, idx) => (
+                <div
+                  key={s.id}
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 12,
+                    padding: 12,
+                    display: 'grid',
+                    gap: 8,
+                    background: '#fff',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>#{idx + 1}</div>
+
+                      <input
+                        defaultValue={s.custom_name || ''}
+                        placeholder={s.stage_template_name || s.stage_name}
+                        onBlur={(e) => renameUnitStage(s.id, e.target.value)}
+                        disabled={manageBusy}
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          outline: 'none',
+                          minWidth: 360,
+                          maxWidth: '100%',
+                        }}
+                        title="Nome personalizado da etapa (só nesta unidade). Deixe vazio para usar o nome do modelo."
+                      />
+
+                      <span style={{ fontSize: 12, color: '#666' }}>
+                        (Modelo: <b>{s.stage_template_name}</b>)
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => moveUnitStage(s.id, -1)}
+                        disabled={manageBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: manageBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 900,
+                        }}
+                        title="Subir"
+                      >
+                        ↑
+                      </button>
+
+                      <button
+                        onClick={() => moveUnitStage(s.id, +1)}
+                        disabled={manageBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: manageBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 900,
+                        }}
+                        title="Descer"
+                      >
+                        ↓
+                      </button>
+
+                      <button
+                        onClick={() => deleteUnitStage(s.id, s.stage_name)}
+                        disabled={manageBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: manageBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 900,
+                          color: '#b00020',
+                        }}
+                        title="Excluir etapa desta unidade"
+                      >
+                        Excluir
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 12, color: '#777' }}>
+                    Dica: o nome salva ao sair do campo. Se deixar vazio, volta a usar o nome do modelo.
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }
