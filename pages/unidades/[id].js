@@ -35,7 +35,28 @@ function clampInt(n, min, max) {
 }
 
 function Modal({ open, title, onClose, children, busy }) {
+  // ✅ trava scroll do body quando abre e restaura quando fecha
+  useEffect(() => {
+    if (!open) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prevOverflow
+    }
+  }, [open])
+
+  // ✅ fecha com ESC
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e) => {
+      if (e.key === 'Escape' && !busy) onClose?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, busy, onClose])
+
   if (!open) return null
+
   return (
     <div
       onMouseDown={(e) => {
@@ -60,6 +81,10 @@ function Modal({ open, title, onClose, children, busy }) {
           border: '1px solid #eee',
           boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           padding: 16,
+          // ✅ importante: limita altura do modal
+          maxHeight: '92vh',
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
@@ -80,7 +105,17 @@ function Modal({ open, title, onClose, children, busy }) {
             ✕
           </button>
         </div>
-        <div style={{ marginTop: 12 }}>{children}</div>
+
+        {/* ✅ conteúdo com scroll interno */}
+        <div
+          style={{
+            marginTop: 12,
+            overflowY: 'auto',
+            paddingRight: 6,
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   )
@@ -100,8 +135,10 @@ export default function UnidadePage() {
   const [user, setUser] = useState(null)
 
   const [unit, setUnit] = useState(null)
-  const [stages, setStages] = useState([]) // unit_stages + stages
-  const [stageCatalog, setStageCatalog] = useState([]) // stages (modelo da obra)
+
+  // ✅ agora stages contém também is_active (do unit_stages)
+  const [stages, setStages] = useState([]) // unit_stages + stages + photos
+  const [stageCatalog, setStageCatalog] = useState([]) // stages (modelo da obra) ativos
 
   const [signedUrlByPhotoId, setSignedUrlByPhotoId] = useState({})
   const [busyStageId, setBusyStageId] = useState(null)
@@ -110,11 +147,14 @@ export default function UnidadePage() {
   // UI do status
   const [editingStatusStageId, setEditingStatusStageId] = useState(null)
 
-  // ✅ NOVO: modal gerenciar etapas da unidade
+  // ✅ NOVO: mostrar/ocultar arquivadas na tela
+  const [showArchived, setShowArchived] = useState(false)
+
+  // ✅ modal gerenciar etapas da unidade
   const [manageOpen, setManageOpen] = useState(false)
   const [manageBusy, setManageBusy] = useState(false)
-  const [addStageId, setAddStageId] = useState('') // stage_id para adicionar
-  const [createStageName, setCreateStageName] = useState('') // criar novo "stage" (modelo) e adicionar
+  const [addStageId, setAddStageId] = useState('')
+  const [createStageName, setCreateStageName] = useState('')
 
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
@@ -147,6 +187,8 @@ export default function UnidadePage() {
   function normalizeStages(stageRows) {
     const normalized = (stageRows || []).map((r) => ({
       ...r,
+      // ✅ unit_stages.is_active pode vir null dependendo do schema antigo; tratamos como true
+      is_active: r.is_active !== false,
       stage_name: r.custom_name || r.stages?.name || '(Sem nome)',
       stage_template_name: r.stages?.name || '(Sem nome)',
       photos: Array.isArray(r.unit_stage_photos) ? r.unit_stage_photos : [],
@@ -197,7 +239,7 @@ export default function UnidadePage() {
 
     setUnit(unitData)
 
-    // Catálogo de etapas (modelo da obra)
+    // Catálogo de etapas (modelo da obra) — só ativas
     const { data: catalog, error: cErr } = await supabase
       .from('stages')
       .select('id, name, order_index, is_active, project_id')
@@ -226,6 +268,7 @@ export default function UnidadePage() {
         notes,
         custom_name,
         order_index,
+        is_active,
         stages ( id, name ),
         unit_stage_photos ( id, path, caption, kind, created_at, user_id )
       `
@@ -242,7 +285,10 @@ export default function UnidadePage() {
 
     const normalized = normalizeStages(stageRows || [])
     setStages(normalized)
-    await hydrateSignedUrls(normalized)
+
+    // ⚠️ importante: signedUrls só para o que está visível (ativa por padrão)
+    const visible = showArchived ? normalized : normalized.filter((s) => s.is_active !== false)
+    await hydrateSignedUrls(visible)
 
     setLoading(false)
   }
@@ -252,7 +298,15 @@ export default function UnidadePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, unitId])
 
+  // ✅ recarrega quando usuário alterna "Mostrar arquivadas"
+  useEffect(() => {
+    if (!router.isReady || !unitId) return
+    loadAll()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showArchived])
+
   function nextOrderIndex() {
+    // usa TODAS as etapas (inclusive arquivadas) para evitar colisão
     const max = (stages || []).reduce((m, s) => Math.max(m, Number(s.order_index || 0)), 0)
     return max + 1
   }
@@ -395,14 +449,13 @@ export default function UnidadePage() {
   }
 
   // ============================
-  // ✅ CRUD ETAPAS NA UNIDADE
+  // CRUD ETAPAS NA UNIDADE
   // ============================
 
   async function addExistingStageToUnit() {
     if (!addStageId) return
     if (!unit?.id) return
 
-    // Evita duplicar a mesma stage_id na unidade
     const already = stages.some((s) => safeStr(s.stage_id) === safeStr(addStageId))
     if (already) {
       alert('Essa etapa já existe nesta unidade.')
@@ -416,6 +469,7 @@ export default function UnidadePage() {
         stage_id: addStageId,
         status: 'pending',
         order_index: nextOrderIndex(),
+        is_active: true,
       }
 
       const { error } = await supabase.from('unit_stages').insert(payload)
@@ -438,7 +492,6 @@ export default function UnidadePage() {
 
     setManageBusy(true)
     try {
-      // cria em stages (modelo da obra)
       const maxOrder = (stageCatalog || []).reduce((m, s) => Math.max(m, Number(s.order_index || 0)), 0)
       const { data: stageRow, error: sErr } = await supabase
         .from('stages')
@@ -467,6 +520,7 @@ export default function UnidadePage() {
         stage_id: stageId,
         status: 'pending',
         order_index: nextOrderIndex(),
+        is_active: true,
       })
 
       if (usErr) {
@@ -497,6 +551,7 @@ export default function UnidadePage() {
   }
 
   async function moveUnitStage(unitStageId, dir) {
+    // reordena na lista completa (inclusive arquivadas) para não bagunçar
     const list = [...stages].sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0))
     const idx = list.findIndex((s) => s.id === unitStageId)
     if (idx === -1) return
@@ -534,7 +589,6 @@ export default function UnidadePage() {
 
     setManageBusy(true)
     try {
-      // ✅ remove fotos e logs primeiro (evita erro de FK, se existir)
       await supabase.from('unit_stage_photos').delete().eq('unit_stage_id', unitStageId)
       await supabase.from('unit_stage_logs').delete().eq('unit_stage_id', unitStageId)
 
@@ -571,6 +625,9 @@ export default function UnidadePage() {
     )
   }
 
+  // ✅ filtro final: por padrão só mostra ativas (unit_stages.is_active=true)
+  const visibleStages = showArchived ? stages : stages.filter((s) => s.is_active !== false)
+
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
@@ -579,7 +636,12 @@ export default function UnidadePage() {
           <h1 style={{ margin: 0 }}>Unidade {unit.identifier || unit.id}</h1>
         </div>
 
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#444' }}>
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+            Mostrar arquivadas
+          </label>
+
           <button
             onClick={() => setManageOpen(true)}
             style={{
@@ -602,14 +664,14 @@ export default function UnidadePage() {
 
       <h2 style={{ marginTop: 0 }}>Etapas</h2>
 
-      {stages.length === 0 ? (
+      {visibleStages.length === 0 ? (
         <div style={{ color: '#666' }}>
-          Nenhuma etapa nesta unidade. Clique em <b>Gerenciar etapas</b> para adicionar.
+          Nenhuma etapa {showArchived ? 'encontrada' : 'ativa'} nesta unidade. Clique em <b>Gerenciar etapas</b> para adicionar.
         </div>
       ) : null}
 
       <div style={{ display: 'grid', gap: 14, maxWidth: 980, marginTop: 12 }}>
-        {stages.map((s) => {
+        {visibleStages.map((s) => {
           const isBusy = busyStageId === s.id
           const isUploading = uploadingStageId === s.id
 
@@ -622,16 +684,19 @@ export default function UnidadePage() {
                 borderRadius: 14,
                 padding: 16,
                 boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
+                opacity: s.is_active === false ? 0.7 : 1,
               }}
             >
-              {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 800 }}>{s.stage_name}</div>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>
+                    {s.stage_name}{' '}
+                    {s.is_active === false ? (
+                      <span style={{ fontSize: 12, color: '#b00020', fontWeight: 900 }}>(Arquivada)</span>
+                    ) : null}
+                  </div>
                   {s.custom_name ? (
-                    <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
-                      Modelo: {s.stage_template_name}
-                    </div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>Modelo: {s.stage_template_name}</div>
                   ) : null}
                 </div>
 
@@ -669,7 +734,6 @@ export default function UnidadePage() {
                 </div>
               </div>
 
-              {/* Menu troca status */}
               {editingStatusStageId === s.id ? (
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button
@@ -728,7 +792,6 @@ export default function UnidadePage() {
                 </div>
               ) : null}
 
-              {/* Notas */}
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>Observações / notas</div>
                 <textarea
@@ -749,7 +812,6 @@ export default function UnidadePage() {
                 <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>(Salva ao sair do campo)</div>
               </div>
 
-              {/* Upload */}
               <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   <label
@@ -841,9 +903,7 @@ export default function UnidadePage() {
                                   <b>{p.caption}</b>
                                 </div>
                               ) : null}
-                              <div style={{ color: '#777' }}>
-                                {p.created_at ? new Date(p.created_at).toLocaleString() : ''}
-                              </div>
+                              <div style={{ color: '#777' }}>{p.created_at ? new Date(p.created_at).toLocaleString() : ''}</div>
                             </div>
                           </div>
                         )
@@ -856,7 +916,7 @@ export default function UnidadePage() {
         })}
       </div>
 
-      {/* ✅ MODAL GERENCIAR ETAPAS */}
+      {/* MODAL GERENCIAR ETAPAS */}
       <Modal open={manageOpen} title="Gerenciar etapas da unidade" onClose={() => setManageOpen(false)} busy={manageBusy}>
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'grid', gap: 8 }}>
@@ -954,6 +1014,7 @@ export default function UnidadePage() {
                     display: 'grid',
                     gap: 8,
                     background: '#fff',
+                    opacity: s.is_active === false ? 0.7 : 1,
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -978,6 +1039,9 @@ export default function UnidadePage() {
 
                       <span style={{ fontSize: 12, color: '#666' }}>
                         (Modelo: <b>{s.stage_template_name}</b>)
+                        {s.is_active === false ? (
+                          <span style={{ marginLeft: 8, color: '#b00020', fontWeight: 900 }}>(Arquivada)</span>
+                        ) : null}
                       </span>
                     </div>
 
