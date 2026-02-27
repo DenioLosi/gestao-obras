@@ -41,6 +41,11 @@ function makeIdentifier(floor, unitIndex, pad2) {
   return `${floor}${suffix}`
 }
 
+/**
+ * ✅ MODAL COM SCROLL INTERNO
+ * - Caixinha do modal tem maxHeight
+ * - Conteúdo rola dentro do modal (sem “prender” a página)
+ */
 function Modal({ open, title, onClose, children, busy }) {
   if (!open) return null
   return (
@@ -62,14 +67,27 @@ function Modal({ open, title, onClose, children, busy }) {
       <div
         style={{
           width: 'min(860px, 100%)',
+          maxHeight: 'calc(100vh - 32px)', // ✅ limita altura no viewport
           background: '#fff',
           borderRadius: 16,
           border: '1px solid #eee',
           boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
-          padding: 16,
+          display: 'flex',
+          flexDirection: 'column', // ✅ header fixo + conteúdo scroll
+          overflow: 'hidden',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        {/* Header fixo */}
+        <div
+          style={{
+            padding: 16,
+            borderBottom: '1px solid #eee',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
           <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
           <button
             onClick={() => !busy && onClose?.()}
@@ -87,7 +105,17 @@ function Modal({ open, title, onClose, children, busy }) {
             ✕
           </button>
         </div>
-        <div style={{ marginTop: 12 }}>{children}</div>
+
+        {/* Conteúdo com scroll */}
+        <div
+          style={{
+            padding: 16,
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   )
@@ -167,7 +195,7 @@ export default function ObraDetalhePage() {
     }
     setProject(p || null)
 
-    // Etapas (stages) — usa order_index
+    // Etapas (stages)
     const { data: st, error: stErr } = await supabase
       .from('stages')
       .select('id, name, order_index, is_active, project_id')
