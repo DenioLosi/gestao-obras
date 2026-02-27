@@ -43,8 +43,6 @@ function makeIdentifier(floor, unitIndex, pad2) {
 
 /**
  * ✅ MODAL COM SCROLL INTERNO
- * - Caixinha do modal tem maxHeight
- * - Conteúdo rola dentro do modal (sem “prender” a página)
  */
 function Modal({ open, title, onClose, children, busy }) {
   if (!open) return null
@@ -67,17 +65,16 @@ function Modal({ open, title, onClose, children, busy }) {
       <div
         style={{
           width: 'min(860px, 100%)',
-          maxHeight: 'calc(100vh - 32px)', // ✅ limita altura no viewport
+          maxHeight: 'calc(100vh - 32px)',
           background: '#fff',
           borderRadius: 16,
           border: '1px solid #eee',
           boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           display: 'flex',
-          flexDirection: 'column', // ✅ header fixo + conteúdo scroll
+          flexDirection: 'column',
           overflow: 'hidden',
         }}
       >
-        {/* Header fixo */}
         <div
           style={{
             padding: 16,
@@ -106,7 +103,6 @@ function Modal({ open, title, onClose, children, busy }) {
           </button>
         </div>
 
-        {/* Conteúdo com scroll */}
         <div
           style={{
             padding: 16,
@@ -195,7 +191,7 @@ export default function ObraDetalhePage() {
     }
     setProject(p || null)
 
-    // Etapas (stages)
+    // Etapas (modelo)
     const { data: st, error: stErr } = await supabase
       .from('stages')
       .select('id, name, order_index, is_active, project_id')
@@ -287,7 +283,7 @@ export default function ObraDetalhePage() {
     await loadData()
   }
 
-  // ====== ETAPAS (MODELO) usando order_index ======
+  // ====== ETAPAS (MODELO) ======
 
   function getMaxOrderIndex() {
     return (stageTemplates || []).reduce((m, s) => {
@@ -302,13 +298,7 @@ export default function ObraDetalhePage() {
     if (!n) return
 
     const nextOrder = getMaxOrderIndex() + 1
-
-    const payload = {
-      project_id: projectId,
-      name: n,
-      order_index: nextOrder,
-      is_active: true,
-    }
+    const payload = { project_id: projectId, name: n, order_index: nextOrder, is_active: true }
 
     const { error } = await supabase.from('stages').insert(payload)
     if (error) {
@@ -415,9 +405,9 @@ export default function ObraDetalhePage() {
     await loadData()
   }
 
-  // ====== APLICAR ETAPAS ÀS UNIDADES (SEM ETAPAS) ======
+  // ====== APLICAR MODELO (UNIDADES SEM ETAPAS) ======
 
-  async function applyStagesToUnitsMissing(unitIds) {
+  async function applyStagesToUnitsMissingAny(unitIds) {
     const ids = unitIds.filter(Boolean)
     if (ids.length === 0) return { created: 0, affectedUnits: 0 }
 
@@ -427,7 +417,12 @@ export default function ObraDetalhePage() {
       return { created: 0, affectedUnits: 0 }
     }
 
-    const { data: existing, error } = await supabase.from('unit_stages').select('unit_id').in('unit_id', ids).limit(100000)
+    const { data: existing, error } = await supabase
+      .from('unit_stages')
+      .select('unit_id')
+      .in('unit_id', ids)
+      .limit(1000000)
+
     if (error) {
       alert(`Erro ao verificar etapas existentes: ${error.message}`)
       return { created: 0, affectedUnits: 0 }
@@ -439,9 +434,7 @@ export default function ObraDetalhePage() {
 
     const rows = []
     for (const uid of missing) {
-      for (const sid of stageIds) {
-        rows.push({ unit_id: uid, stage_id: sid, status: 'pending' })
-      }
+      for (const sid of stageIds) rows.push({ unit_id: uid, stage_id: sid, status: 'pending', is_active: true })
     }
 
     let inserted = 0
@@ -468,8 +461,114 @@ export default function ObraDetalhePage() {
     setStagesBusy(true)
     try {
       const unitIds = (units || []).map((u) => u.id)
-      const res = await applyStagesToUnitsMissing(unitIds)
+      const res = await applyStagesToUnitsMissingAny(unitIds)
       alert(`Aplicação concluída.\nUnidades afetadas: ${res.affectedUnits}\nRegistros criados: ${res.created}`)
+      await loadData()
+    } finally {
+      setStagesBusy(false)
+    }
+  }
+
+  // ====== ✅ ATUALIZAR MODELO (SINCRONIZAR TODAS AS UNIDADES) ======
+  // Faz:
+  // 1) Criar associações faltantes (unit_stages) para TODAS as unidades (sem duplicar)
+  // 2) Sincronizar unit_stages.is_active de acordo com stages.is_active (arquivar/reativar em massa)
+  async function syncModelToAllUnits() {
+    const ok = window.confirm(
+      `ATUALIZAR MODELO EM TODAS AS UNIDADES?\n\n` +
+        `• Cria etapas faltantes em cada unidade (sem duplicar)\n` +
+        `• Arquiva/reativa etapas nas unidades conforme o modelo\n` +
+        `• Não apaga fotos/notas/histórico`
+    )
+    if (!ok) return
+
+    const unitIds = (units || []).map((u) => u.id).filter(Boolean)
+    if (unitIds.length === 0) {
+      alert('Esta obra não tem unidades.')
+      return
+    }
+
+    if (!Array.isArray(stageTemplates) || stageTemplates.length === 0) {
+      alert('Cadastre as etapas do modelo primeiro.')
+      return
+    }
+
+    setStagesBusy(true)
+    try {
+      const { data: existing, error: exErr } = await supabase
+        .from('unit_stages')
+        .select('unit_id, stage_id')
+        .in('unit_id', unitIds)
+        .limit(1000000)
+
+      if (exErr) {
+        alert(`Erro ao ler unit_stages: ${exErr.message}`)
+        return
+      }
+
+      const existingKey = new Set((existing || []).map((r) => `${safeStr(r.unit_id)}::${safeStr(r.stage_id)}`))
+
+      const rowsToInsert = []
+      for (const uid of unitIds) {
+        for (const st of stageTemplates) {
+          const sid = st.id
+          const k = `${safeStr(uid)}::${safeStr(sid)}`
+          if (!existingKey.has(k)) {
+            rowsToInsert.push({
+              unit_id: uid,
+              stage_id: sid,
+              status: 'pending',
+              is_active: st.is_active !== false,
+            })
+          }
+        }
+      }
+
+      const B = 500
+      for (let i = 0; i < rowsToInsert.length; i += B) {
+        const chunk = rowsToInsert.slice(i, i + B)
+        const { error: insErr } = await supabase.from('unit_stages').insert(chunk)
+        if (insErr) {
+          alert(`Erro ao criar etapas faltantes: ${insErr.message}`)
+          return
+        }
+      }
+
+      const archivedIds = stageTemplates.filter((s) => s.is_active === false).map((s) => s.id)
+      const activeIds = stageTemplates.filter((s) => s.is_active !== false).map((s) => s.id)
+
+      if (archivedIds.length > 0) {
+        const { error: aErr } = await supabase
+          .from('unit_stages')
+          .update({ is_active: false })
+          .in('unit_id', unitIds)
+          .in('stage_id', archivedIds)
+
+        if (aErr) {
+          alert(`Erro ao arquivar etapas nas unidades: ${aErr.message}`)
+          return
+        }
+      }
+
+      if (activeIds.length > 0) {
+        const { error: rErr } = await supabase
+          .from('unit_stages')
+          .update({ is_active: true })
+          .in('unit_id', unitIds)
+          .in('stage_id', activeIds)
+
+        if (rErr) {
+          alert(`Erro ao reativar etapas nas unidades: ${rErr.message}`)
+          return
+        }
+      }
+
+      alert(
+        `Modelo atualizado!\n` +
+          `Etapas criadas (faltantes): ${rowsToInsert.length}\n` +
+          `Unidades afetadas: ${unitIds.length}`
+      )
+
       await loadData()
     } finally {
       setStagesBusy(false)
@@ -512,9 +611,7 @@ export default function ObraDetalhePage() {
 
     const identifiers = []
     for (let f = start; f <= end; f++) {
-      for (let i = 1; i <= perFloor; i++) {
-        identifiers.push(makeIdentifier(f, i, bulkPad2Digits))
-      }
+      for (let i = 1; i <= perFloor; i++) identifiers.push(makeIdentifier(f, i, bulkPad2Digits))
     }
 
     const existing = new Set((units || []).map((u) => safeStr(u?.identifier)))
@@ -553,12 +650,11 @@ export default function ObraDetalhePage() {
         if (Array.isArray(data)) created.push(...data)
       }
 
+      // cria unit_stages (apenas etapas ATIVAS)
       const stageIds = activeStages.map((s) => s.id)
       const rows = []
       for (const u of created) {
-        for (const sid of stageIds) {
-          rows.push({ unit_id: u.id, stage_id: sid, status: 'pending' })
-        }
+        for (const sid of stageIds) rows.push({ unit_id: u.id, stage_id: sid, status: 'pending', is_active: true })
       }
 
       const B2 = 500
@@ -571,9 +667,10 @@ export default function ObraDetalhePage() {
         }
       }
 
+      // opcional: também aplicar em unidades antigas sem etapas
       if (bulkApplyStagesToExistingMissing) {
         const allUnitIds = [...(units || []).map((u) => u.id), ...created.map((x) => x.id)]
-        await applyStagesToUnitsMissing(allUnitIds)
+        await applyStagesToUnitsMissingAny(allUnitIds)
       }
 
       alert(`Criadas ${created.length} unidades com etapas.`)
@@ -909,6 +1006,23 @@ export default function ObraDetalhePage() {
               title="Cria etapas para as unidades que estão sem etapas"
             >
               Aplicar nas unidades sem etapas
+            </button>
+
+            <button
+              onClick={syncModelToAllUnits}
+              disabled={stagesBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: stagesBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+              title="Sincroniza o modelo para todas as unidades: cria faltantes e arquiva/reativa conforme o modelo"
+            >
+              Atualizar modelo (todas as unidades)
             </button>
 
             <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
