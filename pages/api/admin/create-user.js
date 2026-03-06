@@ -5,6 +5,32 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 )
 
+async function findUserByEmail(email) {
+  let page = 1
+  const perPage = 200
+
+  while (true) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+      page,
+      perPage,
+    })
+
+    if (error) {
+      throw new Error(error.message)
+    }
+
+    const users = data?.users || []
+    const found = users.find(
+      (u) => (u.email || '').toLowerCase() === email.toLowerCase()
+    )
+
+    if (found) return found
+    if (users.length < perPage) return null
+
+    page += 1
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método não permitido' })
@@ -29,7 +55,9 @@ export default async function handler(req, res) {
     }
 
     if (!userPassword || userPassword.length < 6) {
-      return res.status(400).json({ error: 'A senha inicial deve ter pelo menos 6 caracteres' })
+      return res.status(400).json({
+        error: 'A senha inicial deve ter pelo menos 6 caracteres',
+      })
     }
 
     if (!userRole) {
@@ -40,28 +68,58 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'tenant_id é obrigatório' })
     }
 
-    // 1) cria usuário no Auth
-    const { data: createData, error: createError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email: userEmail,
-        password: userPassword,
-        email_confirm: true,
-        user_metadata: {
-          full_name: fullName,
-        },
-      })
+    let userId = null
+    let userAlreadyExisted = false
 
-    if (createError) {
-      return res.status(400).json({ error: createError.message })
+    // 1) tenta localizar usuário já existente pelo email
+    const existingUser = await findUserByEmail(userEmail)
+
+    if (existingUser) {
+      userId = existingUser.id
+      userAlreadyExisted = true
+
+      // atualiza senha e metadados do usuário existente
+      const { error: updAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
+        userId,
+        {
+          password: userPassword,
+          user_metadata: {
+            ...(existingUser.user_metadata || {}),
+            full_name: fullName,
+          },
+          email_confirm: true,
+        }
+      )
+
+      if (updAuthErr) {
+        return res.status(400).json({ error: updAuthErr.message })
+      }
+    } else {
+      // 2) cria usuário novo no Auth
+      const { data: createData, error: createError } =
+        await supabaseAdmin.auth.admin.createUser({
+          email: userEmail,
+          password: userPassword,
+          email_confirm: true,
+          user_metadata: {
+            full_name: fullName,
+          },
+        })
+
+      if (createError) {
+        return res.status(400).json({ error: createError.message })
+      }
+
+      userId = createData?.user?.id
+
+      if (!userId) {
+        return res.status(400).json({
+          error: 'Não foi possível obter o id do usuário criado.',
+        })
+      }
     }
 
-    const userId = createData?.user?.id
-
-    if (!userId) {
-      return res.status(400).json({ error: 'Não foi possível obter o id do usuário criado.' })
-    }
-
-    // 2) cria/atualiza profile
+    // 3) cria/atualiza profile
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert(
@@ -80,7 +138,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: profileError.message })
     }
 
-    // 3) remove acessos antigos
+    // 4) remove acessos antigos do usuário
     const { error: deleteMembersError } = await supabaseAdmin
       .from('project_members')
       .delete()
@@ -90,7 +148,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: deleteMembersError.message })
     }
 
-    // 4) grava acessos novos
+    // 5) grava acessos novos
     if (projectIds.length > 0) {
       const rows = projectIds.map((project_id) => ({
         user_id: userId,
@@ -109,7 +167,10 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       user_id: userId,
-      message: 'Usuário criado com sucesso.',
+      reused_existing_user: userAlreadyExisted,
+      message: userAlreadyExisted
+        ? 'Usuário já existia e foi atualizado com sucesso.'
+        : 'Usuário criado com sucesso.',
     })
   } catch (error) {
     return res.status(500).json({
