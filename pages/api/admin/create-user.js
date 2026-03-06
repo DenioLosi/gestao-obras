@@ -40,9 +40,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'tenant_id é obrigatório' })
     }
 
-    let userId = null
-
-    // 1) tenta criar usuário no Auth
+    // 1) cria usuário no Auth
     const { data: createData, error: createError } =
       await supabaseAdmin.auth.admin.createUser({
         email: userEmail,
@@ -54,18 +52,16 @@ export default async function handler(req, res) {
       })
 
     if (createError) {
-      // Se o email já existir, retorna erro claro.
-      // Depois podemos evoluir para reaproveitar usuário existente.
       return res.status(400).json({ error: createError.message })
     }
 
-    userId = createData?.user?.id
+    const userId = createData?.user?.id
 
     if (!userId) {
       return res.status(400).json({ error: 'Não foi possível obter o id do usuário criado.' })
     }
 
-    // 2) cria/atualiza profile com UPSERT
+    // 2) cria/atualiza profile
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert(
@@ -84,7 +80,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: profileError.message })
     }
 
-    // 3) remove acessos antigos (se houver) para evitar duplicação/confusão
+    // 3) remove acessos antigos
     const { error: deleteMembersError } = await supabaseAdmin
       .from('project_members')
       .delete()
