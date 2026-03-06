@@ -90,6 +90,7 @@ function Modal({ open, title, children, onClose }) {
 export default function ObrasPainelPage() {
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
+  const [profile, setProfile] = useState(null)
   const [projects, setProjects] = useState([])
 
   // busca + ordenação
@@ -112,13 +113,53 @@ export default function ObrasPainelPage() {
   async function loadData() {
     setLoading(true)
 
-    // usuário
+    // usuário autenticado
     const { data: authData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !authData?.user) {
       window.location.href = '/login'
       return
     }
-    setUserEmail(authData.user.email || '')
+
+    const authUser = authData.user
+    setUserEmail(authUser.email || '')
+
+    // profile do usuário
+    const { data: profileData, error: profileErr } = await supabase
+      .from('profiles')
+      .select('id, full_name, role, status, tenant_id')
+      .eq('id', authUser.id)
+      .maybeSingle()
+
+    if (profileErr) {
+      console.error('Erro ao carregar profile:', profileErr)
+      alert(`Erro ao carregar perfil: ${profileErr.message}`)
+      setProjects([])
+      setLoading(false)
+      return
+    }
+
+    if (!profileData) {
+      alert('Perfil do usuário não encontrado.')
+      setProjects([])
+      setLoading(false)
+      return
+    }
+
+    if (profileData.status !== 'active') {
+      alert('Usuário inativo.')
+      await supabase.auth.signOut()
+      window.location.href = '/login'
+      return
+    }
+
+    if (!profileData.tenant_id) {
+      alert('Seu usuário não está vinculado a nenhum tenant.')
+      setProjects([])
+      setLoading(false)
+      return
+    }
+
+    setProfile(profileData)
 
     // projetos + unidades
     const { data, error } = await supabase
@@ -131,6 +172,7 @@ export default function ObrasPainelPage() {
         client_name,
         city,
         address,
+        tenant_id,
         created_at,
         units (
           id,
@@ -140,10 +182,12 @@ export default function ObrasPainelPage() {
         )
       `
       )
+      .eq('tenant_id', profileData.tenant_id)
       .order('created_at', { ascending: true })
 
     if (error) {
       console.error('Erro ao carregar projects:', error)
+      alert(`Erro ao carregar obras: ${error.message}`)
       setProjects([])
       setLoading(false)
       return
@@ -208,19 +252,21 @@ export default function ObrasPainelPage() {
           )
         })
 
-    list.sort((a, b) => {
-      if (sortBy === 'progress_desc') return clampPct(b.avgProgress) - clampPct(a.avgProgress)
-      if (sortBy === 'progress_asc') return clampPct(a.avgProgress) - clampPct(b.avgProgress)
-      if (sortBy === 'inprogress_desc') return (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0)
-      if (sortBy === 'pending_desc') return (b.counts?.pending || 0) - (a.counts?.pending || 0)
-      if (sortBy === 'newest') return getTime(b) - getTime(a)
-      if (sortBy === 'oldest') return getTime(a) - getTime(b)
-      if (sortBy === 'name_asc') return safeStr(a?.name).localeCompare(safeStr(b?.name))
-      return 0
-    })
-
-    // desempate por nome
-    list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name)))
+    if (sortBy === 'progress_desc') {
+      list.sort((a, b) => clampPct(b.avgProgress) - clampPct(a.avgProgress))
+    } else if (sortBy === 'progress_asc') {
+      list.sort((a, b) => clampPct(a.avgProgress) - clampPct(b.avgProgress))
+    } else if (sortBy === 'inprogress_desc') {
+      list.sort((a, b) => (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0))
+    } else if (sortBy === 'pending_desc') {
+      list.sort((a, b) => (b.counts?.pending || 0) - (a.counts?.pending || 0))
+    } else if (sortBy === 'newest') {
+      list.sort((a, b) => getTime(b) - getTime(a))
+    } else if (sortBy === 'oldest') {
+      list.sort((a, b) => getTime(a) - getTime(b))
+    } else if (sortBy === 'name_asc') {
+      list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name), 'pt-BR'))
+    }
 
     return list
   }, [cards, search, sortBy])
@@ -266,11 +312,22 @@ export default function ObrasPainelPage() {
       alert('Informe o cliente.')
       return
     }
+    if (!profile?.tenant_id) {
+      alert('Tenant do usuário não encontrado.')
+      return
+    }
 
     try {
       setSaving(true)
 
-      const payload = { name, description, client_name, city, address }
+      const payload = {
+        name,
+        description,
+        client_name,
+        city,
+        address,
+        tenant_id: profile.tenant_id,
+      }
 
       if (editProjectId) {
         const { error } = await supabase.from('projects').update(payload).eq('id', editProjectId)
@@ -318,6 +375,9 @@ export default function ObrasPainelPage() {
   if (loading) {
     return (
       <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        <div style={{ marginBottom: 12 }}>
+          <Link href="/">← Home</Link>
+        </div>
         <h1 style={{ marginBottom: 8 }}>Obras</h1>
         <div>Carregando…</div>
       </div>
@@ -326,6 +386,10 @@ export default function ObrasPainelPage() {
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+      <div style={{ marginBottom: 12 }}>
+        <Link href="/">← Home</Link>
+      </div>
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ marginBottom: 6 }}>Obras</h1>
@@ -351,7 +415,6 @@ export default function ObrasPainelPage() {
         </button>
       </div>
 
-      {/* BUSCA + ORDENAÇÃO */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
         <input
           value={search}
@@ -491,7 +554,6 @@ export default function ObrasPainelPage() {
                   </div>
                 </div>
 
-                {/* Progresso médio */}
                 <div style={{ display: 'grid', gap: 6 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
                     <span>Progresso médio</span>
@@ -510,7 +572,6 @@ export default function ObrasPainelPage() {
                   </div>
                 </div>
 
-                {/* Contadores */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 4 }}>
                   <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                     <div style={{ fontSize: 12, color: '#666' }}>{STATUS_LABEL.pending}</div>
@@ -528,7 +589,6 @@ export default function ObrasPainelPage() {
                   </div>
                 </div>
 
-                {/* Ações */}
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
                   <Link href={`/obras/${c.id}`} style={{ textDecoration: 'none' }}>
                     <button
@@ -585,7 +645,6 @@ export default function ObrasPainelPage() {
         </div>
       )}
 
-      {/* MODAL */}
       <Modal open={modalOpen} title={editProjectId ? 'Editar obra' : 'Nova obra'} onClose={() => !saving && closeModal()}>
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ display: 'grid', gap: 6 }}>
@@ -656,7 +715,14 @@ export default function ObrasPainelPage() {
             <button
               onClick={closeModal}
               disabled={saving}
-              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 800 }}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontWeight: 800,
+              }}
             >
               Cancelar
             </button>
