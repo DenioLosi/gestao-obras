@@ -72,8 +72,8 @@ function Modal({ open, title, children, onClose, busy = false }) {
               cursor: busy ? 'not-allowed' : 'pointer',
               fontWeight: 800,
             }}
-            title="Fechar"
             disabled={busy}
+            title="Fechar"
           >
             ✕
           </button>
@@ -112,14 +112,25 @@ export default function UsuariosPage() {
   const [alertOpen, setAlertOpen] = useState(false)
   const [alertMsg, setAlertMsg] = useState('')
 
-  // modal criar usuário
   const [createOpen, setCreateOpen] = useState(false)
   const [creatingUser, setCreatingUser] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createEmail, setCreateEmail] = useState('')
+  const [createPhone, setCreatePhone] = useState('')
   const [createPassword, setCreatePassword] = useState('123456')
   const [createRole, setCreateRole] = useState('worker')
   const [createProjectIds, setCreateProjectIds] = useState(new Set())
+
+  const [editOpen, setEditOpen] = useState(false)
+  const [editingUser, setEditingUser] = useState(false)
+  const [editUserId, setEditUserId] = useState('')
+  const [editName, setEditName] = useState('')
+  const [editEmail, setEditEmail] = useState('')
+  const [editPhone, setEditPhone] = useState('')
+  const [editRole, setEditRole] = useState('worker')
+  const [editStatus, setEditStatus] = useState('active')
+  const [editProjectIds, setEditProjectIds] = useState(new Set())
+  const [resetPasswordOnSave, setResetPasswordOnSave] = useState(false)
 
   function showAlert(msg) {
     setAlertMsg(msg)
@@ -137,7 +148,7 @@ export default function UsuariosPage() {
 
     const { data: myProfile, error: pErr } = await supabase
       .from('profiles')
-      .select('id, full_name, role, status, tenant_id, must_change_password')
+      .select('id, full_name, phone, role, status, tenant_id, must_change_password')
       .eq('id', authData.user.id)
       .maybeSingle()
 
@@ -156,7 +167,7 @@ export default function UsuariosPage() {
 
     const { data: tenantUsers, error: uErr } = await supabase
       .from('profiles')
-      .select('id, full_name, role, status, tenant_id, created_at, must_change_password')
+      .select('id, full_name, phone, role, status, tenant_id, created_at, must_change_password')
       .eq('tenant_id', myProfile.tenant_id)
       .order('created_at', { ascending: true })
 
@@ -199,8 +210,7 @@ export default function UsuariosPage() {
         return
       }
 
-      const s = new Set((data || []).map((r) => safeStr(r.project_id)))
-      setMemberProjectIds(s)
+      setMemberProjectIds(new Set((data || []).map((r) => safeStr(r.project_id))))
     } finally {
       setBusyAccess(false)
     }
@@ -315,6 +325,7 @@ export default function UsuariosPage() {
   function openCreateModal() {
     setCreateName('')
     setCreateEmail('')
+    setCreatePhone('')
     setCreatePassword('123456')
     setCreateRole('worker')
     setCreateProjectIds(new Set())
@@ -342,6 +353,7 @@ export default function UsuariosPage() {
   async function createUser() {
     const name = safeStr(createName).trim()
     const email = safeStr(createEmail).trim().toLowerCase()
+    const phone = safeStr(createPhone).trim()
     const password = safeStr(createPassword)
     const role = safeStr(createRole)
 
@@ -358,6 +370,7 @@ export default function UsuariosPage() {
         body: JSON.stringify({
           name,
           email,
+          phone,
           password,
           role,
           tenant_id: me.profile.tenant_id,
@@ -374,13 +387,137 @@ export default function UsuariosPage() {
 
       setCreateOpen(false)
       await loadMeAndTenantData()
-      showAlert(
-        `Usuário criado com sucesso.\n\nEmail: ${email}\nSenha inicial: ${password}\n\nNa primeira entrada ele será obrigado a alterar a senha.`
-      )
+      showAlert(json?.message || 'Usuário processado com sucesso.')
     } catch (err) {
       showAlert(`Erro ao criar usuário: ${err.message}`)
     } finally {
       setCreatingUser(false)
+    }
+  }
+
+  async function openEditModal(userRow) {
+    setEditUserId(userRow.id)
+    setEditName(userRow.full_name || '')
+    setEditEmail('')
+    setEditPhone(userRow.phone || '')
+    setEditRole(userRow.role || 'worker')
+    setEditStatus(userRow.status || 'active')
+    setResetPasswordOnSave(false)
+
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      if (authData?.user?.id === userRow.id) {
+        setEditEmail(authData.user.email || '')
+      }
+    } catch {}
+
+    const { data: accessRows, error } = await supabase
+      .from('project_members')
+      .select('project_id')
+      .eq('user_id', userRow.id)
+
+    if (error) {
+      showAlert(`Erro ao carregar acessos do usuário: ${error.message}`)
+      return
+    }
+
+    setEditProjectIds(new Set((accessRows || []).map((r) => safeStr(r.project_id))))
+    setEditOpen(true)
+  }
+
+  function toggleEditProject(projectId) {
+    setEditProjectIds((prev) => {
+      const next = new Set(prev)
+      const k = safeStr(projectId)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+  }
+
+  function editMarkAll() {
+    setEditProjectIds(new Set(projects.map((p) => safeStr(p.id))))
+  }
+
+  function editUnmarkAll() {
+    setEditProjectIds(new Set())
+  }
+
+  async function saveEditedUser() {
+    if (!editUserId) return
+    if (!me?.profile?.tenant_id) return showAlert('Tenant do admin não encontrado.')
+
+    const name = safeStr(editName).trim()
+    const email = safeStr(editEmail).trim().toLowerCase()
+    const phone = safeStr(editPhone).trim()
+
+    if (!name) return showAlert('Informe o nome do usuário.')
+    if (!email) return showAlert('Informe o email do usuário.')
+
+    setEditingUser(true)
+    try {
+      const response = await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: editUserId,
+          name,
+          email,
+          phone,
+          role: editRole,
+          status: editStatus,
+          tenant_id: me.profile.tenant_id,
+          projects: [...editProjectIds],
+          reset_password: resetPasswordOnSave,
+        }),
+      })
+
+      const json = await response.json()
+
+      if (!response.ok) {
+        showAlert(json?.error || 'Erro ao atualizar usuário.')
+        return
+      }
+
+      setEditOpen(false)
+      await loadMeAndTenantData()
+      showAlert(json?.message || 'Usuário atualizado com sucesso.')
+    } catch (err) {
+      showAlert(`Erro ao atualizar usuário: ${err.message}`)
+    } finally {
+      setEditingUser(false)
+    }
+  }
+
+  async function deleteUser(userRow) {
+    const label = userRow.full_name || userRow.id
+    const ok = window.confirm(
+      `Excluir o usuário "${label}"?\n\nIsso irá remover:\n- login\n- perfil\n- permissões de obras`
+    )
+    if (!ok) return
+
+    try {
+      const response = await fetch('/api/admin/delete-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userRow.id }),
+      })
+
+      const json = await response.json()
+
+      if (!response.ok) {
+        showAlert(json?.error || 'Erro ao excluir usuário.')
+        return
+      }
+
+      if (selectedUserId === userRow.id) {
+        setSelectedUserId(null)
+      }
+
+      await loadMeAndTenantData()
+      showAlert(json?.message || 'Usuário excluído com sucesso.')
+    } catch (err) {
+      showAlert(`Erro ao excluir usuário: ${err.message}`)
     }
   }
 
@@ -425,7 +562,7 @@ export default function UsuariosPage() {
 
       <hr style={{ margin: '18px 0' }} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 380px) 1fr', gap: 16, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
         <div
           style={{
             border: '1px solid #eee',
@@ -447,32 +584,81 @@ export default function UsuariosPage() {
               users.map((u) => {
                 const selected = u.id === selectedUserId
                 const label = u.full_name || u.id
+
                 return (
-                  <button
+                  <div
                     key={u.id}
-                    onClick={() => setSelectedUserId(u.id)}
                     style={{
-                      textAlign: 'left',
                       border: selected ? '2px solid #111' : '1px solid #eee',
                       background: '#fff',
                       borderRadius: 14,
                       padding: 12,
-                      cursor: 'pointer',
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                      <div style={{ fontWeight: 900, wordBreak: 'break-word' }}>{label}</div>
-                      <div style={{ fontSize: 12, color: u.status === 'disabled' || u.status === 'inactive' ? '#b00020' : '#111', fontWeight: 900 }}>
-                        {STATUS_PT[u.status] || u.status || '—'}
+                    <button
+                      onClick={() => setSelectedUserId(u.id)}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                        <div style={{ fontWeight: 900, wordBreak: 'break-word' }}>{label}</div>
+                        <div style={{ fontSize: 12, color: u.status === 'disabled' || u.status === 'inactive' ? '#b00020' : '#111', fontWeight: 900 }}>
+                          {STATUS_PT[u.status] || u.status || '—'}
+                        </div>
                       </div>
+
+                      <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                        Role: <b>{ROLE_PT[u.role] || u.role || '—'}</b>
+                      </div>
+
+                      {u.phone ? (
+                        <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                          Contato: <b>{u.phone}</b>
+                        </div>
+                      ) : null}
+
+                      <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
+                        Troca de senha pendente: <b>{u.must_change_password ? 'sim' : 'não'}</b>
+                      </div>
+                    </button>
+
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => openEditModal(u)}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: 'pointer',
+                          fontWeight: 900,
+                        }}
+                      >
+                        Editar
+                      </button>
+
+                      <button
+                        onClick={() => deleteUser(u)}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 12,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: 'pointer',
+                          color: '#b00020',
+                          fontWeight: 900,
+                        }}
+                      >
+                        Excluir
+                      </button>
                     </div>
-                    <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
-                      Role: <b>{ROLE_PT[u.role] || u.role || '—'}</b>
-                    </div>
-                    <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
-                      Troca de senha pendente: <b>{u.must_change_password ? 'sim' : 'não'}</b>
-                    </div>
-                  </button>
+                  </div>
                 )
               })
             )}
@@ -659,6 +845,17 @@ export default function UsuariosPage() {
             </div>
 
             <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Contato</div>
+              <input
+                value={createPhone}
+                onChange={(e) => setCreatePhone(e.target.value)}
+                placeholder="Telefone / WhatsApp"
+                disabled={creatingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
               <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Perfil *</div>
               <select
                 value={createRole}
@@ -776,6 +973,169 @@ export default function UsuariosPage() {
 
           <div style={{ fontSize: 12, color: '#777' }}>
             Após o primeiro login, o usuário será obrigado a alterar a senha.
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={editOpen} title="Editar usuário" onClose={() => setEditOpen(false)} busy={editingUser}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Nome *</div>
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                disabled={editingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Email *</div>
+              <input
+                value={editEmail}
+                onChange={(e) => setEditEmail(e.target.value)}
+                disabled={editingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Contato</div>
+              <input
+                value={editPhone}
+                onChange={(e) => setEditPhone(e.target.value)}
+                disabled={editingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Perfil *</div>
+              <select
+                value={editRole}
+                onChange={(e) => setEditRole(e.target.value)}
+                disabled={editingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+              >
+                <option value="admin">Administrador</option>
+                <option value="worker">Colaborador/Terceirizado</option>
+                <option value="client">Cliente</option>
+                <option value="collaborator">Colaborador</option>
+                <option value="contractor">Terceirizado</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Status *</div>
+              <select
+                value={editStatus}
+                onChange={(e) => setEditStatus(e.target.value)}
+                disabled={editingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+              >
+                <option value="active">Ativo</option>
+                <option value="disabled">Inativo</option>
+                <option value="inactive">Inativo</option>
+              </select>
+            </div>
+          </div>
+
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: editingUser ? 'not-allowed' : 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={resetPasswordOnSave}
+              onChange={(e) => setResetPasswordOnSave(e.target.checked)}
+              disabled={editingUser}
+            />
+            <span style={{ fontSize: 13, color: '#444' }}>
+              Resetar senha para <b>123456</b> e obrigar troca no próximo acesso
+            </span>
+          </label>
+
+          <hr style={{ margin: '4px 0' }} />
+
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontWeight: 900 }}>Permissões de Obras</div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                onClick={editMarkAll}
+                disabled={editingUser || projects.length === 0}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+              >
+                Marcar todas
+              </button>
+              <button
+                onClick={editUnmarkAll}
+                disabled={editingUser}
+                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+              >
+                Desmarcar todas
+              </button>
+            </div>
+
+            {projects.length === 0 ? (
+              <div style={{ color: '#666' }}>Nenhuma obra encontrada.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {projects.map((p) => {
+                  const checked = editProjectIds.has(safeStr(p.id))
+                  return (
+                    <label
+                      key={p.id}
+                      style={{
+                        display: 'flex',
+                        gap: 10,
+                        alignItems: 'center',
+                        border: '1px solid #eee',
+                        borderRadius: 12,
+                        padding: 10,
+                        background: '#fff',
+                        cursor: editingUser ? 'not-allowed' : 'pointer',
+                        opacity: editingUser ? 0.7 : 1,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleEditProject(p.id)}
+                        disabled={editingUser}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {p.name || '(Sem nome)'}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#666' }}>
+                          {p.client_name ? <b>{p.client_name}</b> : null}
+                          {p.client_name && p.city ? ' • ' : null}
+                          {p.city || ''}
+                          {p.address ? ` • ${p.address}` : ''}
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => setEditOpen(false)}
+              disabled={editingUser}
+              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              onClick={saveEditedUser}
+              disabled={editingUser}
+              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#111', color: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+            >
+              {editingUser ? 'Salvando…' : 'Salvar alterações'}
+            </button>
           </div>
         </div>
       </Modal>
