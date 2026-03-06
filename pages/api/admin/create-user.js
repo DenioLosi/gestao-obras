@@ -108,6 +108,7 @@ export default async function handler(req, res) {
         {
           id: userId,
           full_name: fullName,
+          email: userEmail,
           phone: userPhone,
           role: userRole,
           status: 'active',
