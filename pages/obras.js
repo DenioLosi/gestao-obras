@@ -26,7 +26,7 @@ function clampPct(n) {
 }
 
 function includesText(v, q) {
-  return (v ?? '').toString().toLowerCase().includes(q)
+  return safeStr(v).toLowerCase().includes(q)
 }
 
 function getTime(v) {
@@ -36,7 +36,6 @@ function getTime(v) {
 
 function Modal({ open, title, children, onClose }) {
   if (!open) return null
-
   return (
     <div
       onMouseDown={(e) => {
@@ -80,7 +79,6 @@ function Modal({ open, title, children, onClose }) {
             ✕
           </button>
         </div>
-
         <div style={{ marginTop: 12 }}>{children}</div>
       </div>
     </div>
@@ -93,86 +91,57 @@ export default function ObrasPainelPage() {
   const [profile, setProfile] = useState(null)
   const [projects, setProjects] = useState([])
 
-  // busca + ordenação
   const [search, setSearch] = useState('')
-  // progress_desc | progress_asc | newest | oldest | name_asc | inprogress_desc | pending_desc
   const [sortBy, setSortBy] = useState('progress_desc')
 
-  // CRUD modal state
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editProjectId, setEditProjectId] = useState(null)
 
-  // form fields
   const [formName, setFormName] = useState('')
   const [formDescription, setFormDescription] = useState('')
   const [formClientName, setFormClientName] = useState('')
   const [formCity, setFormCity] = useState('')
   const [formAddress, setFormAddress] = useState('')
 
-  async function loadData() {
-    setLoading(true)
-
-    // usuário autenticado
+  async function ensureAuth() {
     const { data: authData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !authData?.user) {
       window.location.href = '/login'
-      return
+      return null
     }
+    setUserEmail(authData.user.email || '')
+    return authData.user
+  }
 
-    const authUser = authData.user
-    setUserEmail(authUser.email || '')
-
-    // profile do usuário
-    const { data: profileData, error: profileErr } = await supabase
+  async function loadProfile(user) {
+    // IMPORTANTE: se der erro de RLS (stack depth), ele vai cair aqui.
+    const { data, error } = await supabase
       .from('profiles')
-      .select('id, full_name, role, status, tenant_id')
-      .eq('id', authUser.id)
+      .select('id, role, status, tenant_id')
+      .eq('id', user.id)
       .maybeSingle()
 
-    if (profileErr) {
-      console.error('Erro ao carregar profile:', profileErr)
-      alert(`Erro ao carregar perfil: ${profileErr.message}`)
-      setProjects([])
-      setLoading(false)
-      return
+    if (error) {
+      alert(`Erro ao carregar perfil: ${error.message}`)
+      return null
     }
+    setProfile(data || null)
+    return data || null
+  }
 
-    if (!profileData) {
-      alert('Perfil do usuário não encontrado.')
-      setProjects([])
-      setLoading(false)
-      return
-    }
-
-    if (profileData.status !== 'active') {
-      alert('Usuário inativo.')
-      await supabase.auth.signOut()
-      window.location.href = '/login'
-      return
-    }
-
-    if (!profileData.tenant_id) {
-      alert('Seu usuário não está vinculado a nenhum tenant.')
-      setProjects([])
-      setLoading(false)
-      return
-    }
-
-    setProfile(profileData)
-
-    // projetos + unidades
+  async function loadProjectsByTenant(tenantId) {
     const { data, error } = await supabase
       .from('projects')
       .select(
         `
         id,
+        tenant_id,
         name,
         description,
         client_name,
         city,
         address,
-        tenant_id,
         created_at,
         units (
           id,
@@ -182,34 +151,49 @@ export default function ObrasPainelPage() {
         )
       `
       )
-      .eq('tenant_id', profileData.tenant_id)
+      .eq('tenant_id', tenantId)
       .order('created_at', { ascending: true })
 
     if (error) {
       console.error('Erro ao carregar projects:', error)
       alert(`Erro ao carregar obras: ${error.message}`)
       setProjects([])
+      return
+    }
+
+    setProjects(
+      (data || []).map((p) => ({
+        ...p,
+        units: Array.isArray(p.units) ? p.units : [],
+      }))
+    )
+  }
+
+  async function loadData() {
+    setLoading(true)
+
+    const user = await ensureAuth()
+    if (!user) return
+
+    const prof = await loadProfile(user)
+    if (!prof?.tenant_id) {
+      setProjects([])
       setLoading(false)
       return
     }
 
-    const normalized = (data || []).map((p) => ({
-      ...p,
-      units: Array.isArray(p.units) ? p.units : [],
-    }))
-
-    setProjects(normalized)
+    await loadProjectsByTenant(prof.tenant_id)
     setLoading(false)
   }
 
   useEffect(() => {
     loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const cards = useMemo(() => {
     return projects.map((p) => {
       const total = p.units.length
-
       const counts = { pending: 0, in_progress: 0, done: 0 }
       let sumProgress = 0
 
@@ -224,6 +208,7 @@ export default function ObrasPainelPage() {
 
       return {
         id: p.id,
+        tenant_id: p.tenant_id,
         name: p.name || '(Sem nome)',
         description: p.description || '',
         client_name: p.client_name || '',
@@ -242,7 +227,7 @@ export default function ObrasPainelPage() {
 
     let list = !q
       ? [...cards]
-      : (cards || []).filter((c) => {
+      : cards.filter((c) => {
           return (
             includesText(c?.name, q) ||
             includesText(c?.description, q) ||
@@ -252,26 +237,25 @@ export default function ObrasPainelPage() {
           )
         })
 
-    if (sortBy === 'progress_desc') {
-      list.sort((a, b) => clampPct(b.avgProgress) - clampPct(a.avgProgress))
-    } else if (sortBy === 'progress_asc') {
-      list.sort((a, b) => clampPct(a.avgProgress) - clampPct(b.avgProgress))
-    } else if (sortBy === 'inprogress_desc') {
-      list.sort((a, b) => (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0))
-    } else if (sortBy === 'pending_desc') {
-      list.sort((a, b) => (b.counts?.pending || 0) - (a.counts?.pending || 0))
-    } else if (sortBy === 'newest') {
-      list.sort((a, b) => getTime(b) - getTime(a))
-    } else if (sortBy === 'oldest') {
-      list.sort((a, b) => getTime(a) - getTime(b))
-    } else if (sortBy === 'name_asc') {
-      list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name), 'pt-BR'))
-    }
+    list.sort((a, b) => {
+      // 1) critério principal
+      let d = 0
+      if (sortBy === 'progress_desc') d = clampPct(b.avgProgress) - clampPct(a.avgProgress)
+      else if (sortBy === 'progress_asc') d = clampPct(a.avgProgress) - clampPct(b.avgProgress)
+      else if (sortBy === 'inprogress_desc') d = (b.counts?.in_progress || 0) - (a.counts?.in_progress || 0)
+      else if (sortBy === 'pending_desc') d = (b.counts?.pending || 0) - (a.counts?.pending || 0)
+      else if (sortBy === 'newest') d = getTime(b) - getTime(a)
+      else if (sortBy === 'oldest') d = getTime(a) - getTime(b)
+      else if (sortBy === 'name_asc') d = safeStr(a?.name).localeCompare(safeStr(b?.name), 'pt-BR')
+
+      // 2) desempate por nome
+      if (d !== 0) return d
+      return safeStr(a?.name).localeCompare(safeStr(b?.name), 'pt-BR')
+    })
 
     return list
   }, [cards, search, sortBy])
 
-  // ===== CRUD =====
   function openCreateModal() {
     setEditProjectId(null)
     setFormName('')
@@ -304,43 +288,21 @@ export default function ObrasPainelPage() {
     const city = safeStr(formCity).trim()
     const address = safeStr(formAddress).trim()
 
-    if (!name) {
-      alert('Informe o nome da obra.')
-      return
-    }
-    if (!client_name) {
-      alert('Informe o cliente.')
-      return
-    }
-    if (!profile?.tenant_id) {
-      alert('Tenant do usuário não encontrado.')
-      return
-    }
+    if (!name) return alert('Informe o nome da obra.')
+    if (!client_name) return alert('Informe o cliente.')
+    if (!profile?.tenant_id) return alert('Seu perfil não tem tenant_id.')
 
     try {
       setSaving(true)
 
-      const payload = {
-        name,
-        description,
-        client_name,
-        city,
-        address,
-        tenant_id: profile.tenant_id,
-      }
+      const payload = { name, description, client_name, city, address, tenant_id: profile.tenant_id }
 
       if (editProjectId) {
         const { error } = await supabase.from('projects').update(payload).eq('id', editProjectId)
-        if (error) {
-          alert(`Erro ao editar obra: ${error.message}`)
-          return
-        }
+        if (error) return alert(`Erro ao editar obra: ${error.message}`)
       } else {
         const { error } = await supabase.from('projects').insert(payload)
-        if (error) {
-          alert(`Erro ao criar obra: ${error.message}`)
-          return
-        }
+        if (error) return alert(`Erro ao criar obra: ${error.message}`)
       }
 
       setModalOpen(false)
@@ -351,34 +313,27 @@ export default function ObrasPainelPage() {
   }
 
   async function deleteProject(card) {
-    const ok = window.confirm(
-      `Excluir a obra "${card.name}"?\n\nATENÇÃO: se existirem unidades vinculadas, o banco pode bloquear (ou apagar junto, dependendo do seu schema).`
-    )
+    // admin-only (UI): se quiser, eu travo aqui também
+    const ok = window.confirm(`Excluir a obra "${card.name}"?`)
     if (!ok) return
 
     try {
       setSaving(true)
-
       const { error } = await supabase.from('projects').delete().eq('id', card.id)
-      if (error) {
-        alert(`Erro ao excluir obra: ${error.message}`)
-        return
-      }
-
+      if (error) return alert(`Erro ao excluir obra: ${error.message}`)
       await loadData()
     } finally {
       setSaving(false)
     }
   }
 
-  // ===== UI =====
   if (loading) {
     return (
       <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-        <div style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <h1 style={{ marginBottom: 8 }}>Obras</h1>
           <Link href="/">← Home</Link>
         </div>
-        <h1 style={{ marginBottom: 8 }}>Obras</h1>
         <div>Carregando…</div>
       </div>
     )
@@ -386,15 +341,20 @@ export default function ObrasPainelPage() {
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-      <div style={{ marginBottom: 12 }}>
-        <Link href="/">← Home</Link>
-      </div>
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <div>
+          <div style={{ marginBottom: 10 }}>
+            <Link href="/" style={{ textDecoration: 'none' }}>← Home</Link>
+          </div>
+
           <h1 style={{ marginBottom: 6 }}>Obras</h1>
-          <div style={{ color: '#444', marginBottom: 12 }}>
+
+          <div style={{ color: '#444', marginBottom: 6 }}>
             Usuário logado: <b>{userEmail}</b>
+          </div>
+
+          <div style={{ color: '#666', fontSize: 12 }}>
+            Perfil: <b>{profile?.role || '—'}</b> • Status: <b>{profile?.status || '—'}</b>
           </div>
         </div>
 
@@ -415,7 +375,7 @@ export default function ObrasPainelPage() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 14, marginBottom: 18 }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -473,7 +433,7 @@ export default function ObrasPainelPage() {
       </div>
 
       {cards.length === 0 ? (
-        <div style={{ marginTop: 18, color: '#444' }}>Nenhuma obra cadastrada.</div>
+        <div style={{ marginTop: 18, color: '#444' }}>Nenhuma obra cadastrada (ou sem permissão no tenant).</div>
       ) : filteredCards.length === 0 ? (
         <div style={{ marginTop: 18, color: '#444' }}>
           Nenhuma obra encontrada para: <b>{search}</b>
@@ -561,14 +521,7 @@ export default function ObrasPainelPage() {
                   </div>
 
                   <div style={{ height: 10, background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
-                    <div
-                      style={{
-                        width: `${pct}%`,
-                        height: '100%',
-                        background: '#111',
-                        opacity: 0.12,
-                      }}
-                    />
+                    <div style={{ width: `${pct}%`, height: '100%', background: '#111', opacity: 0.12 }} />
                   </div>
                 </div>
 
@@ -618,26 +571,10 @@ export default function ObrasPainelPage() {
                       color: '#b00020',
                       fontWeight: 800,
                     }}
-                    title="Excluir obra"
+                    title="Excluir obra (admin)"
                   >
                     Excluir
                   </button>
-
-                  <Link href={`/obras/${c.id}/estoque`} style={{ textDecoration: 'none' }}>
-                    <button style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
-                      Estoque
-                    </button>
-                  </Link>
-
-                  <Link href={`/obras/${c.id}/relatorios`} style={{ textDecoration: 'none' }}>
-                    <button style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
-                      Relatórios
-                    </button>
-                  </Link>
-                </div>
-
-                <div style={{ fontSize: 12, color: '#777' }}>
-                  Dica: clique em <b>Acessar unidades</b> para usar filtros por status e progresso.
                 </div>
               </div>
             )
@@ -664,7 +601,7 @@ export default function ObrasPainelPage() {
               <input
                 value={formClientName}
                 onChange={(e) => setFormClientName(e.target.value)}
-                placeholder="Ex: Atmós / Emirates / Cliente XPTO"
+                placeholder="Ex: Cliente XPTO"
                 style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none' }}
                 disabled={saving}
               />
@@ -715,14 +652,7 @@ export default function ObrasPainelPage() {
             <button
               onClick={closeModal}
               disabled={saving}
-              style={{
-                padding: '10px 12px',
-                borderRadius: 12,
-                border: '1px solid #ddd',
-                background: '#fff',
-                cursor: saving ? 'not-allowed' : 'pointer',
-                fontWeight: 800,
-              }}
+              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 800 }}
             >
               Cancelar
             </button>
