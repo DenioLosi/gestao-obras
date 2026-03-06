@@ -12,6 +12,8 @@ const ROLE_PT = {
   admin: 'admin',
   worker: 'colaborador',
   client: 'cliente',
+  collaborator: 'colaborador',
+  contractor: 'terceirizado',
 }
 
 function safeStr(v) {
@@ -32,7 +34,7 @@ function clampPct(n) {
 }
 
 function includesText(v, q) {
-  return (v ?? '').toString().toLowerCase().includes(q)
+  return safeStr(v).toLowerCase().includes(q)
 }
 
 function getTime(v) {
@@ -96,20 +98,16 @@ function Modal({ open, title, children, onClose }) {
 export default function ObrasPainelPage() {
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
-  const [profile, setProfile] = useState(null) // {id,email,role,status,tenant_id}
-
+  const [profile, setProfile] = useState(null)
   const [projects, setProjects] = useState([])
 
-  // busca + ordenação
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('progress_desc')
 
-  // CRUD modal state (admin)
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editProjectId, setEditProjectId] = useState(null)
 
-  // form fields
   const [formName, setFormName] = useState('')
   const [formDescription, setFormDescription] = useState('')
   const [formClientName, setFormClientName] = useState('')
@@ -119,7 +117,6 @@ export default function ObrasPainelPage() {
   async function loadData() {
     setLoading(true)
 
-    // usuário
     const { data: authData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !authData?.user) {
       window.location.href = '/login'
@@ -127,10 +124,9 @@ export default function ObrasPainelPage() {
     }
     setUserEmail(authData.user.email || '')
 
-    // profile
     const { data: p, error: pErr } = await supabase
       .from('profiles')
-      .select('id, email, role, status, tenant_id')
+      .select('id, full_name, role, status, tenant_id')
       .eq('id', authData.user.id)
       .maybeSingle()
 
@@ -143,7 +139,7 @@ export default function ObrasPainelPage() {
 
     setProfile(p)
 
-    if (p.status === 'disabled') {
+    if (p.status === 'disabled' || p.status === 'inactive') {
       alert('Seu usuário está inativo. Procure o administrador.')
       window.location.href = '/'
       return
@@ -166,7 +162,6 @@ export default function ObrasPainelPage() {
       )
     `
 
-    // ADMIN: vê tudo do tenant
     if (p.role === 'admin') {
       const { data, error } = await supabase
         .from('projects')
@@ -187,7 +182,6 @@ export default function ObrasPainelPage() {
       return
     }
 
-    // NÃO ADMIN: lê project_members e depois busca projetos permitidos
     const { data: mem, error: memErr } = await supabase
       .from('project_members')
       .select('project_id')
@@ -286,14 +280,12 @@ export default function ObrasPainelPage() {
       return 0
     })
 
-    // desempate por nome
     list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name)))
     return list
   }, [cards, search, sortBy])
 
   const isAdmin = profile?.role === 'admin'
 
-  // ===== CRUD (admin) =====
   function openCreateModal() {
     setEditProjectId(null)
     setFormName('')
@@ -340,7 +332,7 @@ export default function ObrasPainelPage() {
         client_name,
         city,
         address,
-        tenant_id: profile?.tenant_id || null, // importante
+        tenant_id: profile?.tenant_id || null,
       }
 
       if (editProjectId) {
@@ -427,7 +419,6 @@ export default function ObrasPainelPage() {
 
       <hr style={{ margin: '18px 0' }} />
 
-      {/* BUSCA + ORDENAÇÃO */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18 }}>
         <input
           value={search}
@@ -571,7 +562,6 @@ export default function ObrasPainelPage() {
                   </div>
                 </div>
 
-                {/* Progresso médio */}
                 <div style={{ display: 'grid', gap: 6 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
                     <span>Progresso médio</span>
@@ -583,7 +573,6 @@ export default function ObrasPainelPage() {
                   </div>
                 </div>
 
-                {/* Contadores */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 4 }}>
                   <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                     <div style={{ fontSize: 12, color: '#666' }}>{STATUS_LABEL.pending}</div>
@@ -601,7 +590,6 @@ export default function ObrasPainelPage() {
                   </div>
                 </div>
 
-                {/* Ações */}
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
                   <Link href={`/obras/${c.id}`} style={{ textDecoration: 'none' }}>
                     <button
@@ -648,7 +636,6 @@ export default function ObrasPainelPage() {
         </div>
       )}
 
-      {/* MODAL (admin) */}
       <Modal open={modalOpen} title={editProjectId ? 'Editar obra' : 'Nova obra'} onClose={() => !saving && closeModal()}>
         {!isAdmin ? (
           <div style={{ color: '#b00020' }}>Apenas administradores podem criar/editar obras.</div>
