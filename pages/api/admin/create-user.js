@@ -6,55 +6,99 @@ const supabaseAdmin = createClient(
 )
 
 export default async function handler(req, res) {
-
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método não permitido' })
   }
 
   try {
-
     const { name, email, password, role, tenant_id, projects } = req.body
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email e senha são obrigatórios' })
+    const fullName = (name || '').toString().trim()
+    const userEmail = (email || '').toString().trim().toLowerCase()
+    const userPassword = (password || '').toString()
+    const userRole = (role || '').toString().trim()
+    const tenantId = (tenant_id || '').toString().trim()
+    const projectIds = Array.isArray(projects) ? projects.filter(Boolean) : []
+
+    if (!fullName) {
+      return res.status(400).json({ error: 'Nome é obrigatório' })
     }
 
-    // cria usuário no AUTH
-    const { data: userData, error: authError } =
+    if (!userEmail) {
+      return res.status(400).json({ error: 'Email é obrigatório' })
+    }
+
+    if (!userPassword || userPassword.length < 6) {
+      return res.status(400).json({ error: 'A senha inicial deve ter pelo menos 6 caracteres' })
+    }
+
+    if (!userRole) {
+      return res.status(400).json({ error: 'Perfil do usuário é obrigatório' })
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'tenant_id é obrigatório' })
+    }
+
+    let userId = null
+
+    // 1) tenta criar usuário no Auth
+    const { data: createData, error: createError } =
       await supabaseAdmin.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true
+        email: userEmail,
+        password: userPassword,
+        email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+        },
       })
 
-    if (authError) {
-      return res.status(400).json({ error: authError.message })
+    if (createError) {
+      // Se o email já existir, retorna erro claro.
+      // Depois podemos evoluir para reaproveitar usuário existente.
+      return res.status(400).json({ error: createError.message })
     }
 
-    const userId = userData.user.id
+    userId = createData?.user?.id
 
-    // cria profile
+    if (!userId) {
+      return res.status(400).json({ error: 'Não foi possível obter o id do usuário criado.' })
+    }
+
+    // 2) cria/atualiza profile com UPSERT
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
-      .insert({
-        id: userId,
-        full_name: name,
-        role: role,
-        tenant_id: tenant_id,
-        status: 'active',
-        must_change_password: true
-      })
+      .upsert(
+        {
+          id: userId,
+          full_name: fullName,
+          role: userRole,
+          status: 'active',
+          tenant_id: tenantId,
+          must_change_password: true,
+        },
+        { onConflict: 'id' }
+      )
 
     if (profileError) {
       return res.status(400).json({ error: profileError.message })
     }
 
-    // salva permissões de obras
-    if (projects && projects.length > 0) {
+    // 3) remove acessos antigos (se houver) para evitar duplicação/confusão
+    const { error: deleteMembersError } = await supabaseAdmin
+      .from('project_members')
+      .delete()
+      .eq('user_id', userId)
 
-      const rows = projects.map(project_id => ({
+    if (deleteMembersError) {
+      return res.status(400).json({ error: deleteMembersError.message })
+    }
+
+    // 4) grava acessos novos
+    if (projectIds.length > 0) {
+      const rows = projectIds.map((project_id) => ({
         user_id: userId,
-        project_id
+        project_id,
       }))
 
       const { error: memberError } = await supabaseAdmin
@@ -66,11 +110,14 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(200).json({ success: true })
-
+    return res.status(200).json({
+      success: true,
+      user_id: userId,
+      message: 'Usuário criado com sucesso.',
+    })
   } catch (error) {
-
-    return res.status(500).json({ error: error.message })
-
+    return res.status(500).json({
+      error: error?.message || 'Erro interno no servidor',
+    })
   }
 }
