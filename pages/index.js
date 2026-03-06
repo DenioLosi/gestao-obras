@@ -1,185 +1,187 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase'
 
 export default function Home() {
-  const router = useRouter()
-
   const [loading, setLoading] = useState(true)
+  const [email, setEmail] = useState('')
   const [profile, setProfile] = useState(null)
-  const [authUser, setAuthUser] = useState(null)
 
-  useEffect(() => {
-    async function load() {
-      const { data, error } = await supabase.auth.getUser()
-      const u = data?.user
+  async function load() {
+    setLoading(true)
 
-      if (error || !u) {
-        router.replace('/login')
-        return
-      }
+    const { data: authData, error: authErr } = await supabase.auth.getUser()
 
-      setAuthUser(u)
-
-      const { data: p, error: pErr } = await supabase
-        .from('profiles')
-        .select('id, full_name, role, status, tenant_id')
-        .eq('id', u.id)
-        .maybeSingle()
-
-      if (pErr) {
-        console.error('Erro ao carregar profile:', pErr)
-        // Se der erro, ainda deixa entrar na home com mínimo (Obras),
-        // mas sem Gestão de Usuários.
-        setProfile(null)
-        setLoading(false)
-        return
-      }
-
-      // Se estiver inativo, joga pro login
-      if (p?.status && p.status !== 'active') {
-        await supabase.auth.signOut()
-        router.replace('/login')
-        return
-      }
-
-      setProfile(p || null)
-      setLoading(false)
+    if (authErr || !authData?.user) {
+      window.location.href = '/login'
+      return
     }
 
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    setEmail(authData.user.email || '')
+
+    const { data: p, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, role, status, tenant_id, must_change_password')
+      .eq('id', authData.user.id)
+      .maybeSingle()
+
+    if (error) {
+      alert(`Erro ao carregar perfil: ${error.message}`)
+      setProfile(null)
+      setLoading(false)
+      return
+    }
+
+    if (!p) {
+      alert('Perfil do usuário não encontrado.')
+      setLoading(false)
+      return
+    }
+
+    if (p.status === 'disabled' || p.status === 'inactive') {
+      alert('Seu usuário está inativo. Procure o administrador.')
+      await supabase.auth.signOut()
+      window.location.href = '/login'
+      return
+    }
+
+    setProfile(p)
+
+    // força troca de senha no primeiro acesso
+    if (p.must_change_password) {
+      window.location.href = '/alterar-senha'
+      return
+    }
+
+    setLoading(false)
+  }
 
   async function signOut() {
     await supabase.auth.signOut()
-    router.replace('/login')
+    window.location.href = '/login'
   }
+
+  useEffect(() => {
+    load()
+  }, [])
 
   if (loading) {
     return (
-      <div style={styles.container}>
-        <h1 style={styles.title}>Gestão de Obras</h1>
-        <p style={styles.subtitle}>Carregando…</p>
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: 'Arial, sans-serif',
+          background: '#f5f7fa',
+        }}
+      >
+        Carregando…
       </div>
     )
   }
 
-  const firstName = (profile?.full_name || authUser?.email || '').split(' ')[0]
   const isAdmin = profile?.role === 'admin'
 
   return (
-    <div style={styles.container}>
-      <h1 style={styles.title}>Gestão de Obras</h1>
+    <div
+      style={{
+        minHeight: '100vh',
+        background: '#f5f7fa',
+        padding: 24,
+        fontFamily: 'Arial, sans-serif',
+      }}
+    >
+      <div style={{ maxWidth: 980, margin: '0 auto' }}>
+        <h1 style={{ margin: 0, fontSize: 34, fontWeight: 900 }}>Gestão de Obras</h1>
 
-      <p style={styles.subtitle}>
-        Olá, <b>{firstName || 'usuário'}</b> 👋
-      </p>
+        <div style={{ marginTop: 8, color: '#444' }}>
+          Olá, <b>{profile?.full_name || email}</b> 👋
+        </div>
 
-      <div style={styles.actionsRow}>
-        <Link href="/obras" style={{ textDecoration: 'none' }}>
-          <div style={styles.actionCard}>
-            <div style={styles.actionTitle}>Obras</div>
-            <div style={styles.actionDesc}>Acompanhar obras, unidades, etapas e fotos</div>
-          </div>
-        </Link>
-
-        {isAdmin ? (
-          <Link href="/usuarios" style={{ textDecoration: 'none' }}>
-            <div style={styles.actionCard}>
-              <div style={styles.actionTitle}>Gestão de Usuários</div>
-              <div style={styles.actionDesc}>Cadastrar e controlar acessos por obra</div>
+        <div
+          style={{
+            marginTop: 18,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+            gap: 14,
+          }}
+        >
+          <Link href="/obras" style={{ textDecoration: 'none' }}>
+            <div
+              style={{
+                background: '#fff',
+                border: '1px solid #eee',
+                borderRadius: 14,
+                padding: 16,
+                boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 900, fontSize: 18 }}>Obras</div>
+              <div style={{ color: '#666', marginTop: 6 }}>
+                Acompanhar obras, unidades, etapas e fotos
+              </div>
             </div>
           </Link>
-        ) : null}
-      </div>
 
-      <div style={styles.card}>
-        <h2 style={{ marginTop: 0 }}>Acesso</h2>
-        <p style={{ margin: '6px 0' }}>
-          Perfil: <b>{profile?.role || '—'}</b>
-        </p>
-        <p style={{ margin: '6px 0' }}>
-          Status: <b>{profile?.status || '—'}</b>
-        </p>
+          {isAdmin ? (
+            <Link href="/usuarios" style={{ textDecoration: 'none' }}>
+              <div
+                style={{
+                  background: '#fff',
+                  border: '1px solid #eee',
+                  borderRadius: 14,
+                  padding: 16,
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontWeight: 900, fontSize: 18 }}>Gestão de Usuários</div>
+                <div style={{ color: '#666', marginTop: 6 }}>
+                  Cadastrar, definir perfil e liberar acesso às obras
+                </div>
+              </div>
+            </Link>
+          ) : null}
+        </div>
 
-        <div style={{ marginTop: 14, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <button onClick={signOut} style={styles.btnSecondary}>
-            Sair
-          </button>
+        <div
+          style={{
+            marginTop: 18,
+            background: '#fff',
+            border: '1px solid #eee',
+            borderRadius: 14,
+            padding: 16,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
+          }}
+        >
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Acesso</div>
+          <div style={{ fontSize: 14, color: '#333' }}>
+            Perfil: <b>{profile?.role || '—'}</b>
+          </div>
+          <div style={{ fontSize: 14, color: '#333' }}>
+            Status: <b>{profile?.status || '—'}</b>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <button
+              onClick={signOut}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Sair
+            </button>
+          </div>
         </div>
       </div>
     </div>
   )
-}
-
-const styles = {
-  container: {
-    minHeight: '100vh',
-    backgroundColor: '#f5f7fa',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontFamily: 'Arial, sans-serif',
-    padding: '20px',
-  },
-  title: {
-    fontSize: '32px',
-    fontWeight: 'bold',
-    marginBottom: '10px',
-  },
-  subtitle: {
-    fontSize: '16px',
-    marginBottom: '18px',
-    color: '#555',
-    textAlign: 'center',
-  },
-  actionsRow: {
-    display: 'flex',
-    gap: 16,
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    marginBottom: 18,
-  },
-  actionCard: {
-    backgroundColor: '#ffffff',
-    padding: '18px 18px',
-    borderRadius: '12px',
-    boxShadow: '0 10px 25px rgba(0,0,0,0.10)',
-    textAlign: 'left',
-    width: 320,
-    border: '1px solid #eee',
-    cursor: 'pointer',
-  },
-  actionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 6,
-    color: '#111',
-  },
-  actionDesc: {
-    fontSize: 13,
-    color: '#555',
-    lineHeight: 1.4,
-  },
-  card: {
-    backgroundColor: '#ffffff',
-    padding: '18px 20px',
-    borderRadius: '12px',
-    boxShadow: '0 10px 25px rgba(0,0,0,0.08)',
-    textAlign: 'center',
-    maxWidth: '520px',
-    width: '100%',
-    border: '1px solid #eee',
-  },
-  btnSecondary: {
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    background: '#fff',
-    cursor: 'pointer',
-    fontWeight: 800,
-  },
 }
