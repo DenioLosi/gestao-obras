@@ -6,11 +6,14 @@ const ROLE_PT = {
   admin: 'Administrador',
   worker: 'Colaborador/Terceirizado',
   client: 'Cliente',
+  collaborator: 'Colaborador',
+  contractor: 'Terceirizado',
 }
 
 const STATUS_PT = {
   active: 'Ativo',
   disabled: 'Inativo',
+  inactive: 'Inativo',
 }
 
 function safeStr(v) {
@@ -70,18 +73,16 @@ function Modal({ open, title, children, onClose }) {
 
 export default function UsuariosPage() {
   const [loading, setLoading] = useState(true)
-  const [me, setMe] = useState(null) // { user, profile }
-  const [users, setUsers] = useState([]) // profiles do tenant
-  const [projects, setProjects] = useState([]) // obras do tenant
+  const [me, setMe] = useState(null)
+  const [users, setUsers] = useState([])
+  const [projects, setProjects] = useState([])
 
   const [selectedUserId, setSelectedUserId] = useState(null)
   const selectedUser = useMemo(() => users.find((u) => u.id === selectedUserId) || null, [users, selectedUserId])
 
-  // acessos (checkbox)
-  const [memberProjectIds, setMemberProjectIds] = useState(new Set()) // obras marcadas para o usuário selecionado
+  const [memberProjectIds, setMemberProjectIds] = useState(new Set())
   const [busyAccess, setBusyAccess] = useState(false)
 
-  // editar usuário
   const [roleDraft, setRoleDraft] = useState('worker')
   const [statusDraft, setStatusDraft] = useState('active')
   const [savingUser, setSavingUser] = useState(false)
@@ -103,10 +104,9 @@ export default function UsuariosPage() {
       return
     }
 
-    // meu profile (para checar role/tenant)
     const { data: myProfile, error: pErr } = await supabase
       .from('profiles')
-      .select('id, email, role, status, tenant_id')
+      .select('id, full_name, role, status, tenant_id')
       .eq('id', authData.user.id)
       .maybeSingle()
 
@@ -116,7 +116,6 @@ export default function UsuariosPage() {
       return
     }
 
-    // só admin entra
     if (myProfile.role !== 'admin') {
       window.location.href = '/'
       return
@@ -124,10 +123,9 @@ export default function UsuariosPage() {
 
     setMe({ user: authData.user, profile: myProfile })
 
-    // usuários do tenant
     const { data: tenantUsers, error: uErr } = await supabase
       .from('profiles')
-      .select('id, email, role, status, tenant_id, created_at')
+      .select('id, full_name, role, status, tenant_id, created_at')
       .eq('tenant_id', myProfile.tenant_id)
       .order('created_at', { ascending: true })
 
@@ -138,7 +136,6 @@ export default function UsuariosPage() {
       setUsers(Array.isArray(tenantUsers) ? tenantUsers : [])
     }
 
-    // obras do tenant
     const { data: prj, error: prjErr } = await supabase
       .from('projects')
       .select('id, name, client_name, city, address, created_at, tenant_id')
@@ -180,16 +177,13 @@ export default function UsuariosPage() {
 
   useEffect(() => {
     loadMeAndTenantData()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // quando seleciona usuário, carrega role/status e acessos
   useEffect(() => {
     if (!selectedUser) return
     setRoleDraft(selectedUser.role || 'worker')
     setStatusDraft(selectedUser.status || 'active')
     loadSelectedUserAccess(selectedUser.id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUserId])
 
   function toggleProject(projectId) {
@@ -238,7 +232,6 @@ export default function UsuariosPage() {
     if (!selectedUser) return
     setBusyAccess(true)
     try {
-      // 1) ler acessos atuais
       const { data: existing, error: exErr } = await supabase
         .from('project_members')
         .select('project_id, user_id')
@@ -256,7 +249,6 @@ export default function UsuariosPage() {
       const toAdd = [...newSet].filter((pid) => !oldSet.has(pid))
       const toRemove = [...oldSet].filter((pid) => !newSet.has(pid))
 
-      // 2) adicionar
       if (toAdd.length > 0) {
         const rows = toAdd.map((pid) => ({
           project_id: pid,
@@ -269,7 +261,6 @@ export default function UsuariosPage() {
         }
       }
 
-      // 3) remover
       if (toRemove.length > 0) {
         const { error: delErr } = await supabase
           .from('project_members')
@@ -317,7 +308,6 @@ export default function UsuariosPage() {
       <hr style={{ margin: '18px 0' }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 380px) 1fr', gap: 16, alignItems: 'start' }}>
-        {/* Lista usuários */}
         <div
           style={{
             border: '1px solid #eee',
@@ -338,6 +328,7 @@ export default function UsuariosPage() {
             ) : (
               users.map((u) => {
                 const selected = u.id === selectedUserId
+                const label = u.full_name || u.id
                 return (
                   <button
                     key={u.id}
@@ -352,8 +343,8 @@ export default function UsuariosPage() {
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                      <div style={{ fontWeight: 900, wordBreak: 'break-word' }}>{u.email || u.id}</div>
-                      <div style={{ fontSize: 12, color: u.status === 'disabled' ? '#b00020' : '#111', fontWeight: 900 }}>
+                      <div style={{ fontWeight: 900, wordBreak: 'break-word' }}>{label}</div>
+                      <div style={{ fontSize: 12, color: u.status === 'disabled' || u.status === 'inactive' ? '#b00020' : '#111', fontWeight: 900 }}>
                         {STATUS_PT[u.status] || u.status || '—'}
                       </div>
                     </div>
@@ -367,7 +358,6 @@ export default function UsuariosPage() {
           </div>
         </div>
 
-        {/* Detalhes */}
         <div
           style={{
             border: '1px solid #eee',
@@ -385,7 +375,7 @@ export default function UsuariosPage() {
           ) : (
             <div style={{ display: 'grid', gap: 14 }}>
               <div style={{ fontSize: 12, color: '#666' }}>
-                Usuário: <b>{selectedUser.email || selectedUser.id}</b>
+                Usuário: <b>{selectedUser.full_name || selectedUser.id}</b>
               </div>
 
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -400,6 +390,8 @@ export default function UsuariosPage() {
                     <option value="admin">Administrador</option>
                     <option value="worker">Colaborador/Terceirizado</option>
                     <option value="client">Cliente</option>
+                    <option value="collaborator">Colaborador</option>
+                    <option value="contractor">Terceirizado</option>
                   </select>
                 </div>
 
@@ -413,6 +405,7 @@ export default function UsuariosPage() {
                   >
                     <option value="active">Ativo</option>
                     <option value="disabled">Inativo</option>
+                    <option value="inactive">Inativo</option>
                   </select>
                 </div>
 
@@ -511,7 +504,7 @@ export default function UsuariosPage() {
                 )}
 
                 <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>
-                  Dica: admin tem acesso total no tenant; worker/client dependem das obras marcadas.
+                  Dica: admin tem acesso total no tenant; os demais dependem das obras marcadas.
                 </div>
               </div>
             </div>
