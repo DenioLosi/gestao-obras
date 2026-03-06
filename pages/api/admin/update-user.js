@@ -35,87 +35,79 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { name, email, password, role, tenant_id, projects, phone } = req.body
+    const {
+      user_id,
+      name,
+      email,
+      phone,
+      role,
+      status,
+      tenant_id,
+      projects,
+      reset_password,
+    } = req.body
 
+    const userId = (user_id || '').toString().trim()
     const fullName = (name || '').toString().trim()
     const userEmail = (email || '').toString().trim().toLowerCase()
-    const userPassword = (password || '').toString()
-    const userRole = (role || '').toString().trim()
-    const tenantId = (tenant_id || '').toString().trim()
     const userPhone = (phone || '').toString().trim()
+    const userRole = (role || '').toString().trim()
+    const userStatus = (status || '').toString().trim()
+    const tenantId = (tenant_id || '').toString().trim()
     const projectIds = Array.isArray(projects) ? projects.filter(Boolean) : []
+    const resetPassword = !!reset_password
 
+    if (!userId) return res.status(400).json({ error: 'user_id é obrigatório' })
     if (!fullName) return res.status(400).json({ error: 'Nome é obrigatório' })
     if (!userEmail) return res.status(400).json({ error: 'Email é obrigatório' })
-    if (!userPassword || userPassword.length < 6) {
-      return res.status(400).json({ error: 'A senha inicial deve ter pelo menos 6 caracteres' })
-    }
-    if (!userRole) return res.status(400).json({ error: 'Perfil do usuário é obrigatório' })
+    if (!userRole) return res.status(400).json({ error: 'Perfil é obrigatório' })
+    if (!userStatus) return res.status(400).json({ error: 'Status é obrigatório' })
     if (!tenantId) return res.status(400).json({ error: 'tenant_id é obrigatório' })
 
-    let userId = null
-    let userAlreadyExisted = false
+    const existingByEmail = await findUserByEmail(userEmail)
+    if (existingByEmail && existingByEmail.id !== userId) {
+      return res.status(400).json({ error: 'Já existe outro usuário com este email.' })
+    }
 
-    const existingUser = await findUserByEmail(userEmail)
+    const payloadAuth = {
+      email: userEmail,
+      email_confirm: true,
+      user_metadata: {
+        full_name: fullName,
+        phone: userPhone,
+      },
+    }
 
-    if (existingUser) {
-      userId = existingUser.id
-      userAlreadyExisted = true
+    if (resetPassword) {
+      payloadAuth.password = '123456'
+    }
 
-      const { error: updAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
-        userId,
-        {
-          email: userEmail,
-          password: userPassword,
-          email_confirm: true,
-          user_metadata: {
-            ...(existingUser.user_metadata || {}),
-            full_name: fullName,
-            phone: userPhone,
-          },
-        }
-      )
+    const { error: updAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
+      userId,
+      payloadAuth
+    )
 
-      if (updAuthErr) {
-        return res.status(400).json({ error: updAuthErr.message })
-      }
-    } else {
-      const { data: createData, error: createError } =
-        await supabaseAdmin.auth.admin.createUser({
-          email: userEmail,
-          password: userPassword,
-          email_confirm: true,
-          user_metadata: {
-            full_name: fullName,
-            phone: userPhone,
-          },
-        })
+    if (updAuthErr) {
+      return res.status(400).json({ error: updAuthErr.message })
+    }
 
-      if (createError) {
-        return res.status(400).json({ error: createError.message })
-      }
+    const profilePayload = {
+      id: userId,
+      full_name: fullName,
+      email: userEmail,
+      phone: userPhone,
+      role: userRole,
+      status: userStatus,
+      tenant_id: tenantId,
+    }
 
-      userId = createData?.user?.id
-
-      if (!userId) {
-        return res.status(400).json({ error: 'Não foi possível obter o id do usuário criado.' })
-      }
+    if (resetPassword) {
+      profilePayload.must_change_password = true
     }
 
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
-      .upsert(
-        {
-          id: userId,
-          full_name: fullName,
-          phone: userPhone,
-          role: userRole,
-          status: 'active',
-          tenant_id: tenantId,
-          must_change_password: true,
-        },
-        { onConflict: 'id' }
-      )
+      .upsert(profilePayload, { onConflict: 'id' })
 
     if (profileError) {
       return res.status(400).json({ error: profileError.message })
@@ -147,11 +139,9 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      user_id: userId,
-      reused_existing_user: userAlreadyExisted,
-      message: userAlreadyExisted
-        ? 'Este email já existia. O usuário foi atualizado e as permissões foram sincronizadas.'
-        : 'Usuário criado com sucesso.',
+      message: resetPassword
+        ? 'Usuário atualizado. A senha foi resetada para 123456 e a troca será obrigatória no próximo acesso.'
+        : 'Usuário atualizado com sucesso.',
     })
   } catch (error) {
     return res.status(500).json({
