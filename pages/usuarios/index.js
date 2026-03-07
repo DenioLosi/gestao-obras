@@ -22,6 +22,7 @@ function safeStr(v) {
 
 function Modal({ open, title, children, onClose, busy = false }) {
   if (!open) return null
+
   return (
     <div
       onMouseDown={(e) => {
@@ -62,8 +63,11 @@ function Modal({ open, title, children, onClose, busy = false }) {
           }}
         >
           <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
+
           <button
+            type="button"
             onClick={() => !busy && onClose?.()}
+            disabled={busy}
             style={{
               border: '1px solid #ddd',
               background: '#fff',
@@ -72,7 +76,6 @@ function Modal({ open, title, children, onClose, busy = false }) {
               cursor: busy ? 'not-allowed' : 'pointer',
               fontWeight: 800,
             }}
-            disabled={busy}
             title="Fechar"
           >
             ✕
@@ -100,7 +103,10 @@ export default function UsuariosPage() {
   const [projects, setProjects] = useState([])
 
   const [selectedUserId, setSelectedUserId] = useState(null)
-  const selectedUser = useMemo(() => users.find((u) => u.id === selectedUserId) || null, [users, selectedUserId])
+  const selectedUser = useMemo(
+    () => users.find((u) => u.id === selectedUserId) || null,
+    [users, selectedUserId]
+  )
 
   const [memberProjectIds, setMemberProjectIds] = useState(new Set())
   const [busyAccess, setBusyAccess] = useState(false)
@@ -148,7 +154,7 @@ export default function UsuariosPage() {
 
     const { data: myProfile, error: pErr } = await supabase
       .from('profiles')
-      .select('id, full_name, phone, role, status, tenant_id, must_change_password')
+      .select('id, full_name, email, phone, role, status, tenant_id, must_change_password')
       .eq('id', authData.user.id)
       .maybeSingle()
 
@@ -167,7 +173,7 @@ export default function UsuariosPage() {
 
     const { data: tenantUsers, error: uErr } = await supabase
       .from('profiles')
-      .select('id, full_name, phone, role, status, tenant_id, created_at, must_change_password')
+      .select('id, full_name, email, phone, role, status, tenant_id, created_at, must_change_password')
       .eq('tenant_id', myProfile.tenant_id)
       .order('created_at', { ascending: true })
 
@@ -197,6 +203,7 @@ export default function UsuariosPage() {
   async function loadSelectedUserAccess(userId) {
     if (!userId) return
     setBusyAccess(true)
+
     try {
       const { data, error } = await supabase
         .from('project_members')
@@ -247,6 +254,7 @@ export default function UsuariosPage() {
 
   async function saveUserRoleAndStatus() {
     if (!selectedUser) return
+
     setSavingUser(true)
     try {
       const { error } = await supabase
@@ -271,6 +279,7 @@ export default function UsuariosPage() {
 
   async function saveAccess() {
     if (!selectedUser) return
+
     setBusyAccess(true)
     try {
       const { data: existing, error: exErr } = await supabase
@@ -295,6 +304,7 @@ export default function UsuariosPage() {
           project_id: pid,
           user_id: selectedUser.id,
         }))
+
         const { error: insErr } = await supabase.from('project_members').insert(rows)
         if (insErr) {
           showAlert(`Erro ao adicionar acessos: ${insErr.message}`)
@@ -357,9 +367,11 @@ export default function UsuariosPage() {
     const password = safeStr(createPassword)
     const role = safeStr(createRole)
 
-    if (!name) return showAlert('Informe o nome do usuário.')
-    if (!email) return showAlert('Informe o email do usuário.')
-    if (!password || password.length < 6) return showAlert('A senha inicial deve ter pelo menos 6 caracteres.')
+    if (!name) return showAlert('Nome é obrigatório')
+    if (!email) return showAlert('Email é obrigatório')
+    if (!password || password.length < 6) {
+      return showAlert('A senha inicial deve ter pelo menos 6 caracteres.')
+    }
     if (!me?.profile?.tenant_id) return showAlert('Tenant do admin não encontrado.')
 
     setCreatingUser(true)
@@ -398,18 +410,11 @@ export default function UsuariosPage() {
   async function openEditModal(userRow) {
     setEditUserId(userRow.id)
     setEditName(userRow.full_name || '')
-    setEditEmail('')
+    setEditEmail(userRow.email || '')
     setEditPhone(userRow.phone || '')
     setEditRole(userRow.role || 'worker')
     setEditStatus(userRow.status || 'active')
     setResetPasswordOnSave(false)
-
-    try {
-      const { data: authData } = await supabase.auth.getUser()
-      if (authData?.user?.id === userRow.id) {
-        setEditEmail(authData.user.email || '')
-      }
-    } catch {}
 
     const { data: accessRows, error } = await supabase
       .from('project_members')
@@ -451,8 +456,8 @@ export default function UsuariosPage() {
     const email = safeStr(editEmail).trim().toLowerCase()
     const phone = safeStr(editPhone).trim()
 
-    if (!name) return showAlert('Informe o nome do usuário.')
-    if (!email) return showAlert('Informe o email do usuário.')
+    if (!name) return showAlert('Nome é obrigatório')
+    if (!email) return showAlert('Email é obrigatório')
 
     setEditingUser(true)
     try {
@@ -490,7 +495,7 @@ export default function UsuariosPage() {
   }
 
   async function deleteUser(userRow) {
-    const label = userRow.full_name || userRow.id
+    const label = userRow.full_name || userRow.email || userRow.id
     const ok = window.confirm(
       `Excluir o usuário "${label}"?\n\nIsso irá remover:\n- login\n- perfil\n- permissões de obras`
     )
@@ -535,7 +540,9 @@ export default function UsuariosPage() {
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>{isAdmin ? 'Admin' : '—'}</div>
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
+            {isAdmin ? 'Admin' : '—'}
+          </div>
           <h1 style={{ margin: 0 }}>Gestão de Usuários</h1>
         </div>
 
@@ -544,6 +551,7 @@ export default function UsuariosPage() {
           <Link href="/obras" style={{ textDecoration: 'none' }}>Obras</Link>
 
           <button
+            type="button"
             onClick={openCreateModal}
             style={{
               padding: '10px 12px',
@@ -583,7 +591,7 @@ export default function UsuariosPage() {
             ) : (
               users.map((u) => {
                 const selected = u.id === selectedUserId
-                const label = u.full_name || u.id
+                const label = u.full_name || u.email || u.id
 
                 return (
                   <div
@@ -595,23 +603,30 @@ export default function UsuariosPage() {
                       padding: 12,
                     }}
                   >
-                    <button
+                    <div
                       onClick={() => setSelectedUserId(u.id)}
                       style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        background: 'transparent',
-                        border: 'none',
                         cursor: 'pointer',
-                        padding: 0,
                       }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
                         <div style={{ fontWeight: 900, wordBreak: 'break-word' }}>{label}</div>
-                        <div style={{ fontSize: 12, color: u.status === 'disabled' || u.status === 'inactive' ? '#b00020' : '#111', fontWeight: 900 }}>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: u.status === 'disabled' || u.status === 'inactive' ? '#b00020' : '#111',
+                            fontWeight: 900,
+                          }}
+                        >
                           {STATUS_PT[u.status] || u.status || '—'}
                         </div>
                       </div>
+
+                      {u.email ? (
+                        <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                          Email: <b>{u.email}</b>
+                        </div>
+                      ) : null}
 
                       <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
                         Role: <b>{ROLE_PT[u.role] || u.role || '—'}</b>
@@ -626,10 +641,11 @@ export default function UsuariosPage() {
                       <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
                         Troca de senha pendente: <b>{u.must_change_password ? 'sim' : 'não'}</b>
                       </div>
-                    </button>
+                    </div>
 
                     <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                       <button
+                        type="button"
                         onClick={() => openEditModal(u)}
                         style={{
                           padding: '8px 10px',
@@ -644,6 +660,7 @@ export default function UsuariosPage() {
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => deleteUser(u)}
                         style={{
                           padding: '8px 10px',
@@ -682,7 +699,7 @@ export default function UsuariosPage() {
           ) : (
             <div style={{ display: 'grid', gap: 14 }}>
               <div style={{ fontSize: 12, color: '#666' }}>
-                Usuário: <b>{selectedUser.full_name || selectedUser.id}</b>
+                Usuário: <b>{selectedUser.full_name || selectedUser.email || selectedUser.id}</b>
               </div>
 
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -692,7 +709,13 @@ export default function UsuariosPage() {
                     value={roleDraft}
                     onChange={(e) => setRoleDraft(e.target.value)}
                     disabled={savingUser}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      fontWeight: 800,
+                    }}
                   >
                     <option value="admin">Administrador</option>
                     <option value="worker">Colaborador/Terceirizado</option>
@@ -708,7 +731,13 @@ export default function UsuariosPage() {
                     value={statusDraft}
                     onChange={(e) => setStatusDraft(e.target.value)}
                     disabled={savingUser}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      fontWeight: 800,
+                    }}
                   >
                     <option value="active">Ativo</option>
                     <option value="disabled">Inativo</option>
@@ -717,6 +746,7 @@ export default function UsuariosPage() {
                 </div>
 
                 <button
+                  type="button"
                   onClick={saveUserRoleAndStatus}
                   disabled={savingUser}
                   style={{
@@ -744,23 +774,50 @@ export default function UsuariosPage() {
 
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                   <button
+                    type="button"
                     onClick={markAll}
                     disabled={busyAccess || projects.length === 0}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: busyAccess ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      cursor: busyAccess ? 'not-allowed' : 'pointer',
+                      fontWeight: 900,
+                    }}
                   >
                     Marcar todas
                   </button>
+
                   <button
+                    type="button"
                     onClick={unmarkAll}
                     disabled={busyAccess}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: busyAccess ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      cursor: busyAccess ? 'not-allowed' : 'pointer',
+                      fontWeight: 900,
+                    }}
                   >
                     Desmarcar todas
                   </button>
+
                   <button
+                    type="button"
                     onClick={saveAccess}
                     disabled={busyAccess}
-                    style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#111', color: '#fff', cursor: busyAccess ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      background: '#111',
+                      color: '#fff',
+                      cursor: busyAccess ? 'not-allowed' : 'pointer',
+                      fontWeight: 900,
+                    }}
                   >
                     {busyAccess ? 'Salvando…' : 'Salvar acessos'}
                   </button>
@@ -794,7 +851,14 @@ export default function UsuariosPage() {
                             disabled={busyAccess}
                           />
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <div
+                              style={{
+                                fontWeight: 900,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
                               {p.name || '(Sem nome)'}
                             </div>
                             <div style={{ fontSize: 12, color: '#666' }}>
@@ -861,7 +925,13 @@ export default function UsuariosPage() {
                 value={createRole}
                 onChange={(e) => setCreateRole(e.target.value)}
                 disabled={creatingUser}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  fontWeight: 800,
+                }}
               >
                 <option value="admin">Administrador</option>
                 <option value="worker">Colaborador/Terceirizado</option>
@@ -893,16 +963,33 @@ export default function UsuariosPage() {
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <button
+                type="button"
                 onClick={createMarkAll}
                 disabled={creatingUser || projects.length === 0}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: creatingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: creatingUser ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
               >
                 Marcar todas
               </button>
+
               <button
+                type="button"
                 onClick={createUnmarkAll}
                 disabled={creatingUser}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: creatingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: creatingUser ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
               >
                 Desmarcar todas
               </button>
@@ -936,7 +1023,14 @@ export default function UsuariosPage() {
                         disabled={creatingUser}
                       />
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div
+                          style={{
+                            fontWeight: 900,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
                           {p.name || '(Sem nome)'}
                         </div>
                         <div style={{ fontSize: 12, color: '#666' }}>
@@ -955,17 +1049,34 @@ export default function UsuariosPage() {
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
             <button
+              type="button"
               onClick={() => setCreateOpen(false)}
               disabled={creatingUser}
-              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: creatingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: creatingUser ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
             >
               Cancelar
             </button>
 
             <button
+              type="button"
               onClick={createUser}
               disabled={creatingUser}
-              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#111', color: '#fff', cursor: creatingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: creatingUser ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
             >
               {creatingUser ? 'Criando…' : 'Criar usuário'}
             </button>
@@ -1016,7 +1127,13 @@ export default function UsuariosPage() {
                 value={editRole}
                 onChange={(e) => setEditRole(e.target.value)}
                 disabled={editingUser}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  fontWeight: 800,
+                }}
               >
                 <option value="admin">Administrador</option>
                 <option value="worker">Colaborador/Terceirizado</option>
@@ -1032,7 +1149,13 @@ export default function UsuariosPage() {
                 value={editStatus}
                 onChange={(e) => setEditStatus(e.target.value)}
                 disabled={editingUser}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', fontWeight: 800 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  fontWeight: 800,
+                }}
               >
                 <option value="active">Ativo</option>
                 <option value="disabled">Inativo</option>
@@ -1041,7 +1164,14 @@ export default function UsuariosPage() {
             </div>
           </div>
 
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: editingUser ? 'not-allowed' : 'pointer' }}>
+          <label
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              cursor: editingUser ? 'not-allowed' : 'pointer',
+            }}
+          >
             <input
               type="checkbox"
               checked={resetPasswordOnSave}
@@ -1060,16 +1190,33 @@ export default function UsuariosPage() {
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <button
+                type="button"
                 onClick={editMarkAll}
                 disabled={editingUser || projects.length === 0}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: editingUser ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
               >
                 Marcar todas
               </button>
+
               <button
+                type="button"
                 onClick={editUnmarkAll}
                 disabled={editingUser}
-                style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: editingUser ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
               >
                 Desmarcar todas
               </button>
@@ -1103,7 +1250,14 @@ export default function UsuariosPage() {
                         disabled={editingUser}
                       />
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div
+                          style={{
+                            fontWeight: 900,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
                           {p.name || '(Sem nome)'}
                         </div>
                         <div style={{ fontSize: 12, color: '#666' }}>
@@ -1122,17 +1276,34 @@ export default function UsuariosPage() {
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
             <button
+              type="button"
               onClick={() => setEditOpen(false)}
               disabled={editingUser}
-              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: editingUser ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
             >
               Cancelar
             </button>
 
             <button
+              type="button"
               onClick={saveEditedUser}
               disabled={editingUser}
-              style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#111', color: '#fff', cursor: editingUser ? 'not-allowed' : 'pointer', fontWeight: 900 }}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: editingUser ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
             >
               {editingUser ? 'Salvando…' : 'Salvar alterações'}
             </button>
@@ -1144,8 +1315,17 @@ export default function UsuariosPage() {
         <div style={{ color: '#333', whiteSpace: 'pre-wrap' }}>{alertMsg}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
           <button
+            type="button"
             onClick={() => setAlertOpen(false)}
-            style={{ padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#111', color: '#fff', cursor: 'pointer', fontWeight: 900 }}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: '#111',
+              color: '#fff',
+              cursor: 'pointer',
+              fontWeight: 900,
+            }}
           >
             OK
           </button>
