@@ -102,11 +102,38 @@ export default function UsuariosPage() {
   const [users, setUsers] = useState([])
   const [projects, setProjects] = useState([])
 
+  const [searchTerm, setSearchTerm] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+
   const [selectedUserId, setSelectedUserId] = useState(null)
   const selectedUser = useMemo(
     () => users.find((u) => u.id === selectedUserId) || null,
     [users, selectedUserId]
   )
+
+  const filteredUsers = useMemo(() => {
+    const q = safeStr(searchTerm).trim().toLowerCase()
+
+    return users.filter((u) => {
+      const fullName = safeStr(u.full_name).toLowerCase()
+      const email = safeStr(u.email).toLowerCase()
+      const phone = safeStr(u.phone).toLowerCase()
+      const role = safeStr(u.role)
+      const status = safeStr(u.status)
+
+      const matchesSearch =
+        !q ||
+        fullName.includes(q) ||
+        email.includes(q) ||
+        phone.includes(q)
+
+      const matchesRole = roleFilter === 'all' || role === roleFilter
+      const matchesStatus = statusFilter === 'all' || status === statusFilter
+
+      return matchesSearch && matchesRole && matchesStatus
+    })
+  }, [users, searchTerm, roleFilter, statusFilter])
 
   const [memberProjectIds, setMemberProjectIds] = useState(new Set())
   const [busyAccess, setBusyAccess] = useState(false)
@@ -233,6 +260,14 @@ export default function UsuariosPage() {
     setStatusDraft(selectedUser.status || 'active')
     loadSelectedUserAccess(selectedUser.id)
   }, [selectedUserId])
+
+  useEffect(() => {
+    if (!selectedUserId) return
+    const stillExists = users.some((u) => u.id === selectedUserId)
+    if (!stillExists) {
+      setSelectedUserId(null)
+    }
+  }, [users, selectedUserId])
 
   function toggleProject(projectId) {
     setMemberProjectIds((prev) => {
@@ -495,6 +530,11 @@ export default function UsuariosPage() {
   }
 
   async function deleteUser(userRow) {
+    if (userRow.id === me?.profile?.id) {
+      showAlert('Você não pode excluir o próprio usuário.')
+      return
+    }
+
     const label = userRow.full_name || userRow.email || userRow.id
     const ok = window.confirm(
       `Excluir o usuário "${label}"?\n\nIsso irá remover:\n- login\n- perfil\n- permissões de obras`
@@ -585,13 +625,76 @@ export default function UsuariosPage() {
             Apenas admins veem esta tela. Usuários inativos não devem operar no sistema.
           </div>
 
+          <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}>
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Buscar por nome, email ou contato"
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+                width: '100%',
+              }}
+            />
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  fontWeight: 800,
+                }}
+              >
+                <option value="all">Todos os perfis</option>
+                <option value="admin">Administrador</option>
+                <option value="worker">Colaborador/Terceirizado</option>
+                <option value="client">Cliente</option>
+                <option value="collaborator">Colaborador</option>
+                <option value="contractor">Terceirizado</option>
+              </select>
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  fontWeight: 800,
+                }}
+              >
+                <option value="all">Todos os status</option>
+                <option value="active">Ativo</option>
+                <option value="disabled">Inativo</option>
+                <option value="inactive">Inativo</option>
+              </select>
+            </div>
+
+            <div style={{ fontSize: 12, color: '#666' }}>
+              Exibindo <b>{filteredUsers.length}</b> de <b>{users.length}</b> usuário(s).
+            </div>
+          </div>
+
           <div style={{ display: 'grid', gap: 10 }}>
-            {users.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhum usuário encontrado no tenant.</div>
+            {filteredUsers.length === 0 ? (
+              <div style={{ color: '#666' }}>
+                {users.length === 0
+                  ? 'Nenhum usuário encontrado no tenant.'
+                  : 'Nenhum usuário encontrado com os filtros informados.'}
+              </div>
             ) : (
-              users.map((u) => {
+              filteredUsers.map((u) => {
                 const selected = u.id === selectedUserId
                 const label = u.full_name || u.email || u.id
+                const isSelf = u.id === me?.profile?.id
 
                 return (
                   <div
@@ -641,6 +744,12 @@ export default function UsuariosPage() {
                       <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
                         Troca de senha pendente: <b>{u.must_change_password ? 'sim' : 'não'}</b>
                       </div>
+
+                      {isSelf ? (
+                        <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+                          Este é o seu usuário atual.
+                        </div>
+                      ) : null}
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
@@ -662,15 +771,18 @@ export default function UsuariosPage() {
                       <button
                         type="button"
                         onClick={() => deleteUser(u)}
+                        disabled={isSelf}
                         style={{
                           padding: '8px 10px',
                           borderRadius: 12,
                           border: '1px solid #ddd',
                           background: '#fff',
-                          cursor: 'pointer',
+                          cursor: isSelf ? 'not-allowed' : 'pointer',
                           color: '#b00020',
                           fontWeight: 900,
+                          opacity: isSelf ? 0.5 : 1,
                         }}
+                        title={isSelf ? 'Você não pode excluir o próprio usuário.' : 'Excluir usuário'}
                       >
                         Excluir
                       </button>
