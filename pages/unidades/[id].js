@@ -34,8 +34,51 @@ function clampInt(n, min, max) {
   return Math.max(min, Math.min(max, Math.floor(v)))
 }
 
+function formatDateTime(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('pt-BR')
+}
+
+function formatStatusLabel(status) {
+  return STATUS_PT[status] || status || '—'
+}
+
+function buildLogDescription(log) {
+  const action = safeStr(log?.action)
+  const oldValue = log?.old_value || {}
+  const newValue = log?.new_value || {}
+
+  if (action === 'status_changed') {
+    const from = formatStatusLabel(oldValue?.status)
+    const to = formatStatusLabel(newValue?.status)
+    if (oldValue?.status && newValue?.status) {
+      return `alterou o status de "${from}" para "${to}"`
+    }
+    if (newValue?.status) {
+      return `alterou o status para "${to}"`
+    }
+    return 'alterou o status'
+  }
+
+  if (action === 'photo_added') {
+    const caption = safeStr(newValue?.caption).trim()
+    return caption ? `adicionou uma foto (${caption})` : 'adicionou uma foto'
+  }
+
+  if (action === 'notes_updated') {
+    return 'atualizou as observações'
+  }
+
+  if (action === 'photo_deleted') {
+    return 'removeu uma foto'
+  }
+
+  return action ? action.replaceAll('_', ' ') : 'realizou uma ação'
+}
+
 function Modal({ open, title, onClose, children, busy }) {
-  // ✅ trava scroll do body quando abre e restaura quando fecha
   useEffect(() => {
     if (!open) return
     const prevOverflow = document.body.style.overflow
@@ -45,7 +88,6 @@ function Modal({ open, title, onClose, children, busy }) {
     }
   }, [open])
 
-  // ✅ fecha com ESC
   useEffect(() => {
     if (!open) return
     const onKey = (e) => {
@@ -81,7 +123,6 @@ function Modal({ open, title, onClose, children, busy }) {
           border: '1px solid #eee',
           boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           padding: 16,
-          // ✅ importante: limita altura do modal
           maxHeight: '92vh',
           display: 'flex',
           flexDirection: 'column',
@@ -90,6 +131,7 @@ function Modal({ open, title, onClose, children, busy }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
           <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
           <button
+            type="button"
             onClick={() => !busy && onClose?.()}
             style={{
               border: '1px solid #ddd',
@@ -106,7 +148,6 @@ function Modal({ open, title, onClose, children, busy }) {
           </button>
         </div>
 
-        {/* ✅ conteúdo com scroll interno */}
         <div
           style={{
             marginTop: 12,
@@ -115,6 +156,168 @@ function Modal({ open, title, onClose, children, busy }) {
           }}
         >
           {children}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PhotoViewer({ open, photos, photoId, signedUrlByPhotoId, onClose, onPrev, onNext }) {
+  useEffect(() => {
+    if (!open) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose?.()
+      if (e.key === 'ArrowLeft') onPrev?.()
+      if (e.key === 'ArrowRight') onNext?.()
+    }
+
+    window.addEventListener('keydown', onKey)
+
+    return () => {
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open, onClose, onPrev, onNext])
+
+  if (!open) return null
+
+  const currentIndex = photos.findIndex((p) => p.id === photoId)
+  const currentPhoto = currentIndex >= 0 ? photos[currentIndex] : null
+  const currentUrl = currentPhoto ? signedUrlByPhotoId[currentPhoto.id] : ''
+
+  return (
+    <div
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose?.()
+      }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 2000,
+        background: 'rgba(0,0,0,0.88)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 18,
+      }}
+    >
+      <div
+        style={{
+          width: 'min(1200px, 100%)',
+          height: 'min(92vh, 100%)',
+          display: 'grid',
+          gridTemplateRows: 'auto 1fr auto',
+          gap: 12,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', color: '#fff' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 18, fontWeight: 900 }}>
+              Visualização da foto
+            </div>
+            <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>
+              {currentPhoto?.caption ? currentPhoto.caption : 'Sem legenda'}
+              {currentPhoto?.created_at ? ` • ${formatDateTime(currentPhoto.created_at)}` : ''}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,0.25)',
+              background: 'rgba(255,255,255,0.08)',
+              color: '#fff',
+              cursor: 'pointer',
+              fontWeight: 900,
+            }}
+          >
+            Fechar ✕
+          </button>
+        </div>
+
+        <div
+          style={{
+            minHeight: 0,
+            display: 'grid',
+            gridTemplateColumns: 'auto 1fr auto',
+            gap: 12,
+            alignItems: 'center',
+          }}
+        >
+          <button
+            type="button"
+            onClick={onPrev}
+            disabled={!currentPhoto || photos.length <= 1}
+            style={{
+              padding: '12px 14px',
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,0.25)',
+              background: 'rgba(255,255,255,0.08)',
+              color: '#fff',
+              cursor: !currentPhoto || photos.length <= 1 ? 'not-allowed' : 'pointer',
+              fontWeight: 900,
+              opacity: !currentPhoto || photos.length <= 1 ? 0.5 : 1,
+            }}
+          >
+            ←
+          </button>
+
+          <div
+            style={{
+              minHeight: 0,
+              height: '100%',
+              borderRadius: 16,
+              border: '1px solid rgba(255,255,255,0.12)',
+              background: 'rgba(255,255,255,0.03)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              overflow: 'hidden',
+            }}
+          >
+            {currentPhoto && currentUrl ? (
+              <img
+                src={currentUrl}
+                alt={currentPhoto.caption || 'foto'}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  objectFit: 'contain',
+                  display: 'block',
+                }}
+              />
+            ) : (
+              <div style={{ color: '#fff', opacity: 0.8 }}>Carregando foto…</div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onNext}
+            disabled={!currentPhoto || photos.length <= 1}
+            style={{
+              padding: '12px 14px',
+              borderRadius: 12,
+              border: '1px solid rgba(255,255,255,0.25)',
+              background: 'rgba(255,255,255,0.08)',
+              color: '#fff',
+              cursor: !currentPhoto || photos.length <= 1 ? 'not-allowed' : 'pointer',
+              fontWeight: 900,
+              opacity: !currentPhoto || photos.length <= 1 ? 0.5 : 1,
+            }}
+          >
+            →
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'center', color: '#fff', fontSize: 13, opacity: 0.85 }}>
+          {currentIndex >= 0 ? `${currentIndex + 1} de ${photos.length}` : ''}
         </div>
       </div>
     </div>
@@ -135,26 +338,25 @@ export default function UnidadePage() {
   const [user, setUser] = useState(null)
 
   const [unit, setUnit] = useState(null)
-
-  // ✅ agora stages contém também is_active (do unit_stages)
-  const [stages, setStages] = useState([]) // unit_stages + stages + photos
-  const [stageCatalog, setStageCatalog] = useState([]) // stages (modelo da obra) ativos
+  const [stages, setStages] = useState([])
+  const [stageCatalog, setStageCatalog] = useState([])
+  const [stageLogsByStageId, setStageLogsByStageId] = useState({})
 
   const [signedUrlByPhotoId, setSignedUrlByPhotoId] = useState({})
   const [busyStageId, setBusyStageId] = useState(null)
   const [uploadingStageId, setUploadingStageId] = useState(null)
 
-  // UI do status
   const [editingStatusStageId, setEditingStatusStageId] = useState(null)
-
-  // ✅ NOVO: mostrar/ocultar arquivadas na tela
   const [showArchived, setShowArchived] = useState(false)
 
-  // ✅ modal gerenciar etapas da unidade
   const [manageOpen, setManageOpen] = useState(false)
   const [manageBusy, setManageBusy] = useState(false)
   const [addStageId, setAddStageId] = useState('')
   const [createStageName, setCreateStageName] = useState('')
+
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [viewerPhotos, setViewerPhotos] = useState([])
+  const [viewerPhotoId, setViewerPhotoId] = useState(null)
 
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
@@ -171,6 +373,7 @@ export default function UnidadePage() {
     for (const s of stageList) {
       for (const p of s.photos || []) photos.push(p)
     }
+
     const missing = photos.filter((p) => p?.id && p?.path && !signedUrlByPhotoId[p.id])
     if (missing.length === 0) return
 
@@ -179,6 +382,7 @@ export default function UnidadePage() {
       const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(p.path, 60 * 60)
       if (!error && data?.signedUrl) updates[p.id] = data.signedUrl
     }
+
     if (Object.keys(updates).length > 0) {
       setSignedUrlByPhotoId((prev) => ({ ...prev, ...updates }))
     }
@@ -187,7 +391,6 @@ export default function UnidadePage() {
   function normalizeStages(stageRows) {
     const normalized = (stageRows || []).map((r) => ({
       ...r,
-      // ✅ unit_stages.is_active pode vir null dependendo do schema antigo; tratamos como true
       is_active: r.is_active !== false,
       stage_name: r.custom_name || r.stages?.name || '(Sem nome)',
       stage_template_name: r.stages?.name || '(Sem nome)',
@@ -205,6 +408,59 @@ export default function UnidadePage() {
     return normalized
   }
 
+  async function loadLogsForStages(stageList) {
+    const stageIds = (stageList || []).map((s) => s.id).filter(Boolean)
+
+    if (stageIds.length === 0) {
+      setStageLogsByStageId({})
+      return
+    }
+
+    const { data: logs, error: logsErr } = await supabase
+      .from('unit_stage_logs')
+      .select('id, unit_stage_id, user_id, action, old_value, new_value, created_at')
+      .in('unit_stage_id', stageIds)
+      .order('created_at', { ascending: false })
+
+    if (logsErr) {
+      console.error('Erro ao carregar histórico das etapas:', logsErr)
+      setStageLogsByStageId({})
+      return
+    }
+
+    const userIds = [...new Set((logs || []).map((l) => l.user_id).filter(Boolean))]
+
+    let profilesById = {}
+    if (userIds.length > 0) {
+      const { data: profiles, error: pErr } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .in('id', userIds)
+
+      if (pErr) {
+        console.error('Erro ao carregar nomes dos usuários do histórico:', pErr)
+      } else {
+        profilesById = Object.fromEntries((profiles || []).map((p) => [p.id, p]))
+      }
+    }
+
+    const grouped = {}
+    for (const log of logs || []) {
+      const unitStageId = log.unit_stage_id
+      if (!grouped[unitStageId]) grouped[unitStageId] = []
+
+      grouped[unitStageId].push({
+        ...log,
+        user_name:
+          profilesById[log.user_id]?.full_name ||
+          (log.user_id === user?.id ? user?.email : '') ||
+          'Usuário',
+      })
+    }
+
+    setStageLogsByStageId(grouped)
+  }
+
   async function loadAll() {
     if (!router.isReady) return
     if (!unitId) return
@@ -214,7 +470,6 @@ export default function UnidadePage() {
     const u = await ensureAuth()
     if (!u) return
 
-    // Unidade
     const { data: unitData, error: unitErr } = await supabase
       .from('units')
       .select('id, identifier, project_id')
@@ -226,6 +481,7 @@ export default function UnidadePage() {
       alert(`Erro ao carregar unidade: ${unitErr.message}`)
       setUnit(null)
       setStages([])
+      setStageLogsByStageId({})
       setLoading(false)
       return
     }
@@ -233,13 +489,13 @@ export default function UnidadePage() {
     if (!unitData) {
       setUnit(null)
       setStages([])
+      setStageLogsByStageId({})
       setLoading(false)
       return
     }
 
     setUnit(unitData)
 
-    // Catálogo de etapas (modelo da obra) — só ativas
     const { data: catalog, error: cErr } = await supabase
       .from('stages')
       .select('id, name, order_index, is_active, project_id')
@@ -254,7 +510,6 @@ export default function UnidadePage() {
       setStageCatalog([])
     }
 
-    // Etapas da unidade + fotos
     const { data: stageRows, error: stageErr } = await supabase
       .from('unit_stages')
       .select(
@@ -279,6 +534,7 @@ export default function UnidadePage() {
       console.error('Erro ao carregar etapas:', stageErr)
       alert(`Erro ao carregar etapas: ${stageErr.message}`)
       setStages([])
+      setStageLogsByStageId({})
       setLoading(false)
       return
     }
@@ -286,9 +542,9 @@ export default function UnidadePage() {
     const normalized = normalizeStages(stageRows || [])
     setStages(normalized)
 
-    // ⚠️ importante: signedUrls só para o que está visível (ativa por padrão)
     const visible = showArchived ? normalized : normalized.filter((s) => s.is_active !== false)
     await hydrateSignedUrls(visible)
+    await loadLogsForStages(normalized)
 
     setLoading(false)
   }
@@ -298,7 +554,6 @@ export default function UnidadePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, unitId])
 
-  // ✅ recarrega quando usuário alterna "Mostrar arquivadas"
   useEffect(() => {
     if (!router.isReady || !unitId) return
     loadAll()
@@ -306,9 +561,37 @@ export default function UnidadePage() {
   }, [showArchived])
 
   function nextOrderIndex() {
-    // usa TODAS as etapas (inclusive arquivadas) para evitar colisão
     const max = (stages || []).reduce((m, s) => Math.max(m, Number(s.order_index || 0)), 0)
     return max + 1
+  }
+
+  function openPhotoViewer(stagePhotos, photoId) {
+    const sorted = [...(stagePhotos || [])].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    setViewerPhotos(sorted)
+    setViewerPhotoId(photoId)
+    setViewerOpen(true)
+  }
+
+  function closePhotoViewer() {
+    setViewerOpen(false)
+    setViewerPhotos([])
+    setViewerPhotoId(null)
+  }
+
+  function showPrevPhoto() {
+    if (!viewerPhotos.length || !viewerPhotoId) return
+    const idx = viewerPhotos.findIndex((p) => p.id === viewerPhotoId)
+    if (idx === -1) return
+    const prevIdx = idx === 0 ? viewerPhotos.length - 1 : idx - 1
+    setViewerPhotoId(viewerPhotos[prevIdx].id)
+  }
+
+  function showNextPhoto() {
+    if (!viewerPhotos.length || !viewerPhotoId) return
+    const idx = viewerPhotos.findIndex((p) => p.id === viewerPhotoId)
+    if (idx === -1) return
+    const nextIdx = idx === viewerPhotos.length - 1 ? 0 : idx + 1
+    setViewerPhotoId(viewerPhotos[nextIdx].id)
   }
 
   async function updateStageStatus(unitStageId, newStatus) {
@@ -317,7 +600,6 @@ export default function UnidadePage() {
 
       const current = stages.find((s) => s.id === unitStageId)
       const oldStatus = current?.status || null
-
       const patch = { status: newStatus }
 
       if (newStatus === 'in_progress' && !current?.started_at) {
@@ -448,10 +730,6 @@ export default function UnidadePage() {
     }
   }
 
-  // ============================
-  // CRUD ETAPAS NA UNIDADE
-  // ============================
-
   async function addExistingStageToUnit() {
     if (!addStageId) return
     if (!unit?.id) return
@@ -551,7 +829,6 @@ export default function UnidadePage() {
   }
 
   async function moveUnitStage(unitStageId, dir) {
-    // reordena na lista completa (inclusive arquivadas) para não bagunçar
     const list = [...stages].sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0))
     const idx = list.findIndex((s) => s.id === unitStageId)
     if (idx === -1) return
@@ -604,10 +881,6 @@ export default function UnidadePage() {
     }
   }
 
-  // ============================
-  // RENDER
-  // ============================
-
   if (loading) {
     return (
       <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -625,7 +898,6 @@ export default function UnidadePage() {
     )
   }
 
-  // ✅ filtro final: por padrão só mostra ativas (unit_stages.is_active=true)
   const visibleStages = showArchived ? stages : stages.filter((s) => s.is_active !== false)
 
   return (
@@ -643,6 +915,7 @@ export default function UnidadePage() {
           </label>
 
           <button
+            type="button"
             onClick={() => setManageOpen(true)}
             style={{
               padding: '10px 12px',
@@ -670,10 +943,12 @@ export default function UnidadePage() {
         </div>
       ) : null}
 
-      <div style={{ display: 'grid', gap: 14, maxWidth: 980, marginTop: 12 }}>
+      <div style={{ display: 'grid', gap: 14, maxWidth: 1180, marginTop: 12 }}>
         {visibleStages.map((s) => {
           const isBusy = busyStageId === s.id
           const isUploading = uploadingStageId === s.id
+          const stageLogs = stageLogsByStageId[s.id] || []
+          const sortedPhotos = [...(s.photos || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 
           return (
             <div
@@ -687,7 +962,7 @@ export default function UnidadePage() {
                 opacity: s.is_active === false ? 0.7 : 1,
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>
                     {s.stage_name}{' '}
@@ -700,7 +975,7 @@ export default function UnidadePage() {
                   ) : null}
                 </div>
 
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                   <span
                     style={{
                       fontSize: 12,
@@ -717,6 +992,7 @@ export default function UnidadePage() {
                   </span>
 
                   <button
+                    type="button"
                     disabled={isBusy || isUploading}
                     onClick={() => setEditingStatusStageId((prev) => (prev === s.id ? null : s.id))}
                     style={{
@@ -737,6 +1013,7 @@ export default function UnidadePage() {
               {editingStatusStageId === s.id ? (
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button
+                    type="button"
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'pending')
@@ -755,6 +1032,7 @@ export default function UnidadePage() {
                   </button>
 
                   <button
+                    type="button"
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'in_progress')
@@ -773,6 +1051,7 @@ export default function UnidadePage() {
                   </button>
 
                   <button
+                    type="button"
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'done')
@@ -792,24 +1071,90 @@ export default function UnidadePage() {
                 </div>
               ) : null}
 
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 12, color: '#444', marginBottom: 6 }}>Observações / notas</div>
-                <textarea
-                  defaultValue={s.notes || ''}
-                  placeholder="Escreva observações desta etapa..."
-                  onBlur={(e) => saveNotes(s.id, e.target.value)}
-                  disabled={isBusy || isUploading}
+              <div
+                style={{
+                  marginTop: 14,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+                  gap: 14,
+                  alignItems: 'start',
+                }}
+              >
+                <div
                   style={{
-                    width: '100%',
-                    minHeight: 84,
-                    padding: 12,
+                    border: '1px solid #eee',
                     borderRadius: 12,
-                    border: '1px solid #ddd',
-                    outline: 'none',
-                    resize: 'vertical',
+                    padding: 14,
+                    background: '#fafafa',
                   }}
-                />
-                <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>(Salva ao sair do campo)</div>
+                >
+                  <div style={{ fontSize: 12, color: '#444', marginBottom: 6, fontWeight: 900 }}>Observações / notas</div>
+                  <textarea
+                    defaultValue={s.notes || ''}
+                    placeholder="Escreva observações desta etapa..."
+                    onBlur={(e) => saveNotes(s.id, e.target.value)}
+                    disabled={isBusy || isUploading}
+                    style={{
+                      width: '100%',
+                      minHeight: 180,
+                      padding: 12,
+                      borderRadius: 12,
+                      border: '1px solid #ddd',
+                      outline: 'none',
+                      resize: 'vertical',
+                      background: '#fff',
+                    }}
+                  />
+                  <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>(Salva ao sair do campo)</div>
+                </div>
+
+                <div
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 12,
+                    padding: 14,
+                    background: '#fafafa',
+                    minHeight: 270,
+                    display: 'grid',
+                    gridTemplateRows: 'auto 1fr',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: '#444', fontWeight: 900 }}>Histórico automático</div>
+
+                  {stageLogs.length === 0 ? (
+                    <div style={{ fontSize: 13, color: '#666' }}>Nenhum evento registrado ainda.</div>
+                  ) : (
+                    <div
+                      style={{
+                        display: 'grid',
+                        gap: 10,
+                        maxHeight: 260,
+                        overflowY: 'auto',
+                        paddingRight: 4,
+                      }}
+                    >
+                      {stageLogs.map((log) => (
+                        <div
+                          key={log.id}
+                          style={{
+                            border: '1px solid #e8e8e8',
+                            borderRadius: 12,
+                            padding: 10,
+                            background: '#fff',
+                          }}
+                        >
+                          <div style={{ fontSize: 13, color: '#111', lineHeight: 1.45 }}>
+                            <b>{log.user_name || 'Usuário'}</b> {buildLogDescription(log)}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
+                            {formatDateTime(log.created_at)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
@@ -844,70 +1189,69 @@ export default function UnidadePage() {
                   </label>
 
                   <div style={{ fontSize: 12, color: '#666' }}>
-                    Fotos: <b>{(s.photos || []).length}</b>
+                    Fotos: <b>{sortedPhotos.length}</b>
                   </div>
                 </div>
 
-                {(s.photos || []).length > 0 ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
-                    {(s.photos || [])
-                      .slice()
-                      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                      .map((p) => {
-                        const url = signedUrlByPhotoId[p.id]
-                        return (
-                          <div
-                            key={p.id}
-                            style={{
-                              border: '1px solid #eee',
-                              borderRadius: 12,
-                              padding: 10,
-                              background: '#fafafa',
-                            }}
-                          >
-                            {url ? (
-                              <a href={url} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-                                <img
-                                  src={url}
-                                  alt={p.caption || 'foto'}
-                                  style={{
-                                    width: '100%',
-                                    height: 140,
-                                    objectFit: 'cover',
-                                    borderRadius: 10,
-                                    display: 'block',
-                                  }}
-                                />
-                              </a>
-                            ) : (
-                              <div
-                                style={{
-                                  width: '100%',
-                                  height: 140,
-                                  borderRadius: 10,
-                                  background: '#eee',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  color: '#666',
-                                  fontSize: 12,
-                                }}
-                              >
-                                Carregando foto…
-                              </div>
-                            )}
-
-                            <div style={{ fontSize: 12, color: '#444', marginTop: 8 }}>
-                              {p.caption ? (
-                                <div style={{ marginBottom: 4 }}>
-                                  <b>{p.caption}</b>
-                                </div>
-                              ) : null}
-                              <div style={{ color: '#777' }}>{p.created_at ? new Date(p.created_at).toLocaleString() : ''}</div>
+                {sortedPhotos.length > 0 ? (
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 10,
+                      flexWrap: 'wrap',
+                      alignItems: 'flex-start',
+                    }}
+                  >
+                    {sortedPhotos.map((p) => {
+                      const url = signedUrlByPhotoId[p.id]
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => openPhotoViewer(sortedPhotos, p.id)}
+                          style={{
+                            width: 88,
+                            border: '1px solid #eee',
+                            borderRadius: 12,
+                            padding: 0,
+                            background: '#fff',
+                            cursor: 'pointer',
+                            overflow: 'hidden',
+                          }}
+                          title={p.caption || 'Abrir foto'}
+                        >
+                          {url ? (
+                            <img
+                              src={url}
+                              alt={p.caption || 'foto'}
+                              style={{
+                                width: '100%',
+                                height: 88,
+                                objectFit: 'cover',
+                                display: 'block',
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '100%',
+                                height: 88,
+                                background: '#eee',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: '#666',
+                                fontSize: 11,
+                                padding: 6,
+                                textAlign: 'center',
+                              }}
+                            >
+                              Carregando…
                             </div>
-                          </div>
-                        )
-                      })}
+                          )}
+                        </button>
+                      )
+                    })}
                   </div>
                 ) : null}
               </div>
@@ -916,7 +1260,6 @@ export default function UnidadePage() {
         })}
       </div>
 
-      {/* MODAL GERENCIAR ETAPAS */}
       <Modal open={manageOpen} title="Gerenciar etapas da unidade" onClose={() => setManageOpen(false)} busy={manageBusy}>
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'grid', gap: 8 }}>
@@ -945,6 +1288,7 @@ export default function UnidadePage() {
               </select>
 
               <button
+                type="button"
                 onClick={addExistingStageToUnit}
                 disabled={manageBusy || !addStageId}
                 style={{
@@ -980,6 +1324,7 @@ export default function UnidadePage() {
               />
 
               <button
+                type="button"
                 onClick={createStageTemplateAndAddToUnit}
                 disabled={manageBusy || !safeStr(createStageName).trim()}
                 style={{
@@ -1047,6 +1392,7 @@ export default function UnidadePage() {
 
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <button
+                        type="button"
                         onClick={() => moveUnitStage(s.id, -1)}
                         disabled={manageBusy}
                         style={{
@@ -1063,6 +1409,7 @@ export default function UnidadePage() {
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => moveUnitStage(s.id, +1)}
                         disabled={manageBusy}
                         style={{
@@ -1079,6 +1426,7 @@ export default function UnidadePage() {
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => deleteUnitStage(s.id, s.stage_name)}
                         disabled={manageBusy}
                         style={{
@@ -1106,6 +1454,16 @@ export default function UnidadePage() {
           )}
         </div>
       </Modal>
+
+      <PhotoViewer
+        open={viewerOpen}
+        photos={viewerPhotos}
+        photoId={viewerPhotoId}
+        signedUrlByPhotoId={signedUrlByPhotoId}
+        onClose={closePhotoViewer}
+        onPrev={showPrevPhoto}
+        onNext={showNextPhoto}
+      />
     </div>
   )
 }
