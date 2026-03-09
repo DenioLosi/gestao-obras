@@ -72,7 +72,8 @@ function buildLogDescription(log) {
   }
 
   if (action === 'photo_deleted') {
-    return 'removeu uma foto'
+    const caption = safeStr(oldValue?.caption).trim()
+    return caption ? `removeu uma foto (${caption})` : 'removeu uma foto'
   }
 
   return action ? action.replaceAll('_', ' ') : 'realizou uma ação'
@@ -345,6 +346,7 @@ export default function UnidadePage() {
   const [signedUrlByPhotoId, setSignedUrlByPhotoId] = useState({})
   const [busyStageId, setBusyStageId] = useState(null)
   const [uploadingStageId, setUploadingStageId] = useState(null)
+  const [deletingPhotoId, setDeletingPhotoId] = useState(null)
 
   const [editingStatusStageId, setEditingStatusStageId] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
@@ -408,7 +410,7 @@ export default function UnidadePage() {
     return normalized
   }
 
-  async function loadLogsForStages(stageList) {
+  async function loadLogsForStages(stageList, currentUser) {
     const stageIds = (stageList || []).map((s) => s.id).filter(Boolean)
 
     if (stageIds.length === 0) {
@@ -453,7 +455,7 @@ export default function UnidadePage() {
         ...log,
         user_name:
           profilesById[log.user_id]?.full_name ||
-          (log.user_id === user?.id ? user?.email : '') ||
+          (log.user_id === currentUser?.id ? currentUser?.email : '') ||
           'Usuário',
       })
     }
@@ -467,8 +469,8 @@ export default function UnidadePage() {
 
     setLoading(true)
 
-    const u = await ensureAuth()
-    if (!u) return
+    const currentUser = await ensureAuth()
+    if (!currentUser) return
 
     const { data: unitData, error: unitErr } = await supabase
       .from('units')
@@ -544,7 +546,7 @@ export default function UnidadePage() {
 
     const visible = showArchived ? normalized : normalized.filter((s) => s.is_active !== false)
     await hydrateSignedUrls(visible)
-    await loadLogsForStages(normalized)
+    await loadLogsForStages(normalized, currentUser)
 
     setLoading(false)
   }
@@ -727,6 +729,68 @@ export default function UnidadePage() {
       await loadAll()
     } finally {
       setUploadingStageId(null)
+    }
+  }
+
+  async function deletePhoto(stageRow, photoRow) {
+    if (!photoRow?.id) return
+    if (!user?.id) {
+      alert('Usuário não autenticado.')
+      return
+    }
+
+    const ok = window.confirm('Excluir esta foto?')
+    if (!ok) return
+
+    try {
+      setDeletingPhotoId(photoRow.id)
+
+      const oldValue = {
+        photo_id: photoRow.id,
+        path: photoRow.path || null,
+        kind: photoRow.kind || null,
+        caption: safeStr(photoRow.caption || ''),
+      }
+
+      if (photoRow.path) {
+        const { error: storageErr } = await supabase.storage.from(BUCKET).remove([photoRow.path])
+        if (storageErr) {
+          alert(`Erro ao excluir arquivo da foto: ${storageErr.message}`)
+          return
+        }
+      }
+
+      const { error: deleteDbErr } = await supabase
+        .from('unit_stage_photos')
+        .delete()
+        .eq('id', photoRow.id)
+
+      if (deleteDbErr) {
+        alert(`Erro ao excluir foto do banco: ${deleteDbErr.message}`)
+        return
+      }
+
+      await supabase.from('unit_stage_logs').insert({
+        unit_stage_id: stageRow.id,
+        user_id: user.id,
+        action: 'photo_deleted',
+        old_value: oldValue,
+        new_value: null,
+      })
+
+      setSignedUrlByPhotoId((prev) => {
+        const next = { ...prev }
+        delete next[photoRow.id]
+        return next
+      })
+
+      if (viewerOpen && viewerPhotoId === photoRow.id) {
+        closePhotoViewer()
+      }
+
+      await loadAll()
+    } finally {
+      setDeletingPhotoId(null)
     }
   }
 
@@ -1204,52 +1268,91 @@ export default function UnidadePage() {
                   >
                     {sortedPhotos.map((p) => {
                       const url = signedUrlByPhotoId[p.id]
+                      const isDeletingThisPhoto = deletingPhotoId === p.id
+
                       return (
-                        <button
+                        <div
                           key={p.id}
-                          type="button"
-                          onClick={() => openPhotoViewer(sortedPhotos, p.id)}
                           style={{
+                            position: 'relative',
                             width: 88,
-                            border: '1px solid #eee',
-                            borderRadius: 12,
-                            padding: 0,
-                            background: '#fff',
-                            cursor: 'pointer',
-                            overflow: 'hidden',
                           }}
-                          title={p.caption || 'Abrir foto'}
                         >
-                          {url ? (
-                            <img
-                              src={url}
-                              alt={p.caption || 'foto'}
-                              style={{
-                                width: '100%',
-                                height: 88,
-                                objectFit: 'cover',
-                                display: 'block',
-                              }}
-                            />
-                          ) : (
-                            <div
-                              style={{
-                                width: '100%',
-                                height: 88,
-                                background: '#eee',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                color: '#666',
-                                fontSize: 11,
-                                padding: 6,
-                                textAlign: 'center',
-                              }}
-                            >
-                              Carregando…
-                            </div>
-                          )}
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => openPhotoViewer(sortedPhotos, p.id)}
+                            disabled={isDeletingThisPhoto}
+                            style={{
+                              width: 88,
+                              border: '1px solid #eee',
+                              borderRadius: 12,
+                              padding: 0,
+                              background: '#fff',
+                              cursor: isDeletingThisPhoto ? 'not-allowed' : 'pointer',
+                              overflow: 'hidden',
+                              opacity: isDeletingThisPhoto ? 0.6 : 1,
+                            }}
+                            title={p.caption || 'Abrir foto'}
+                          >
+                            {url ? (
+                              <img
+                                src={url}
+                                alt={p.caption || 'foto'}
+                                style={{
+                                  width: '100%',
+                                  height: 88,
+                                  objectFit: 'cover',
+                                  display: 'block',
+                                }}
+                              />
+                            ) : (
+                              <div
+                                style={{
+                                  width: '100%',
+                                  height: 88,
+                                  background: '#eee',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  color: '#666',
+                                  fontSize: 11,
+                                  padding: 6,
+                                  textAlign: 'center',
+                                }}
+                              >
+                                Carregando…
+                              </div>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              deletePhoto(s, p)
+                            }}
+                            disabled={isDeletingThisPhoto}
+                            title="Excluir foto"
+                            style={{
+                              position: 'absolute',
+                              top: -6,
+                              right: -6,
+                              width: 26,
+                              height: 26,
+                              borderRadius: 999,
+                              border: '1px solid #ddd',
+                              background: '#fff',
+                              color: '#b00020',
+                              cursor: isDeletingThisPhoto ? 'not-allowed' : 'pointer',
+                              fontWeight: 900,
+                              boxShadow: '0 4px 10px rgba(0,0,0,0.15)',
+                              opacity: isDeletingThisPhoto ? 0.6 : 1,
+                            }}
+                          >
+                            {isDeletingThisPhoto ? '…' : '✕'}
+                          </button>
+                        </div>
                       )
                     })}
                   </div>
