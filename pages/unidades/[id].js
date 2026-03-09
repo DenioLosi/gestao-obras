@@ -76,6 +76,27 @@ function buildLogDescription(log) {
     return caption ? `removeu uma foto (${caption})` : 'removeu uma foto'
   }
 
+  if (action === 'stage_archived') {
+    return 'arquivou a etapa'
+  }
+
+  if (action === 'stage_unarchived') {
+    return 'desarquivou a etapa'
+  }
+
+  if (action === 'stage_renamed') {
+    const from = safeStr(oldValue?.name).trim()
+    const to = safeStr(newValue?.name).trim()
+    if (from && to) return `renomeou a etapa de "${from}" para "${to}"`
+    if (to) return `definiu o nome da etapa como "${to}"`
+    return 'renomeou a etapa'
+  }
+
+  if (action === 'stage_copied') {
+    const name = safeStr(newValue?.new_stage_name).trim()
+    return name ? `copiou a etapa para "${name}"` : 'copiou a etapa'
+  }
+
   return action ? action.replaceAll('_', ' ') : 'realizou uma ação'
 }
 
@@ -360,6 +381,29 @@ export default function UnidadePage() {
   const [viewerPhotos, setViewerPhotos] = useState([])
   const [viewerPhotoId, setViewerPhotoId] = useState(null)
 
+  const [openActionMenuStageId, setOpenActionMenuStageId] = useState(null)
+
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [renameStageId, setRenameStageId] = useState('')
+  const [renameStageCurrentName, setRenameStageCurrentName] = useState('')
+  const [renameStageValue, setRenameStageValue] = useState('')
+
+  const [copyOpen, setCopyOpen] = useState(false)
+  const [copyBusy, setCopyBusy] = useState(false)
+  const [copySourceStage, setCopySourceStage] = useState(null)
+  const [copyName, setCopyName] = useState('')
+  const [copyStructure, setCopyStructure] = useState(true)
+  const [copyNotes, setCopyNotes] = useState(false)
+  const [copyPhotos, setCopyPhotos] = useState(false)
+
+  useEffect(() => {
+    if (!openActionMenuStageId) return
+    const close = () => setOpenActionMenuStageId(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [openActionMenuStageId])
+
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
     if (error || !data?.user) {
@@ -596,6 +640,24 @@ export default function UnidadePage() {
     setViewerPhotoId(viewerPhotos[nextIdx].id)
   }
 
+  function openRenameModal(stageRow) {
+    setOpenActionMenuStageId(null)
+    setRenameStageId(stageRow.id)
+    setRenameStageCurrentName(stageRow.stage_name || '')
+    setRenameStageValue(stageRow.custom_name || stageRow.stage_name || '')
+    setRenameOpen(true)
+  }
+
+  function openCopyModal(stageRow) {
+    setOpenActionMenuStageId(null)
+    setCopySourceStage(stageRow)
+    setCopyName(`${stageRow.stage_name} (cópia)`)
+    setCopyStructure(true)
+    setCopyNotes(false)
+    setCopyPhotos(false)
+    setCopyOpen(true)
+  }
+
   async function updateStageStatus(unitStageId, newStatus) {
     try {
       setBusyStageId(unitStageId)
@@ -794,6 +856,186 @@ export default function UnidadePage() {
     }
   }
 
+  async function setStageArchivedState(stageRow, nextIsActive) {
+    if (!user?.id) {
+      alert('Usuário não autenticado.')
+      return
+    }
+
+    const confirmMsg = nextIsActive
+      ? `Desarquivar a etapa "${stageRow.stage_name}"?`
+      : `Arquivar a etapa "${stageRow.stage_name}"?`
+
+    const ok = window.confirm(confirmMsg)
+    if (!ok) return
+
+    try {
+      setBusyStageId(stageRow.id)
+      setOpenActionMenuStageId(null)
+
+      const { error } = await supabase
+        .from('unit_stages')
+        .update({ is_active: nextIsActive })
+        .eq('id', stageRow.id)
+
+      if (error) {
+        alert(`Erro ao ${nextIsActive ? 'desarquivar' : 'arquivar'} etapa: ${error.message}`)
+        return
+      }
+
+      await supabase.from('unit_stage_logs').insert({
+        unit_stage_id: stageRow.id,
+        user_id: user.id,
+        action: nextIsActive ? 'stage_unarchived' : 'stage_archived',
+        old_value: { is_active: stageRow.is_active !== false },
+        new_value: { is_active: nextIsActive },
+      })
+
+      await loadAll()
+    } finally {
+      setBusyStageId(null)
+    }
+  }
+
+  async function saveRenameStage() {
+    if (!renameStageId) return
+    if (!user?.id) {
+      alert('Usuário não autenticado.')
+      return
+    }
+
+    const stageRow = stages.find((s) => s.id === renameStageId)
+    if (!stageRow) return
+
+    const newName = safeStr(renameStageValue).trim()
+    const currentCustomName = safeStr(stageRow.custom_name).trim()
+    const currentLabel = safeStr(stageRow.stage_name).trim()
+
+    const nextCustomName = newName || null
+    const nextDisplayName = newName || safeStr(stageRow.stage_template_name).trim()
+
+    if (currentCustomName === safeStr(nextCustomName).trim()) {
+      setRenameOpen(false)
+      return
+    }
+
+    try {
+      setRenameBusy(true)
+
+      const { error } = await supabase
+        .from('unit_stages')
+        .update({ custom_name: nextCustomName })
+        .eq('id', renameStageId)
+
+      if (error) {
+        alert(`Erro ao renomear etapa: ${error.message}`)
+        return
+      }
+
+      await supabase.from('unit_stage_logs').insert({
+        unit_stage_id: renameStageId,
+        user_id: user.id,
+        action: 'stage_renamed',
+        old_value: { name: currentLabel },
+        new_value: { name: nextDisplayName },
+      })
+
+      setRenameOpen(false)
+      await loadAll()
+    } finally {
+      setRenameBusy(false)
+    }
+  }
+
+  async function copyStage() {
+    if (!copySourceStage?.id) return
+    if (!copyStructure && !copyNotes && !copyPhotos) {
+      alert('Selecione ao menos um conteúdo para copiar.')
+      return
+    }
+    if (!user?.id) {
+      alert('Usuário não autenticado.')
+      return
+    }
+
+    const targetName = safeStr(copyName).trim() || `${copySourceStage.stage_name} (cópia)`
+
+    try {
+      setCopyBusy(true)
+
+      const payload = {
+        unit_id: copySourceStage.unit_id,
+        stage_id: copySourceStage.stage_id,
+        status: 'pending',
+        order_index: nextOrderIndex(),
+        is_active: true,
+        custom_name: targetName,
+        notes: copyNotes ? safeStr(copySourceStage.notes || '') : '',
+      }
+
+      const { data: newStage, error: newStageErr } = await supabase
+        .from('unit_stages')
+        .insert(payload)
+        .select('id, unit_id, stage_id, custom_name')
+        .maybeSingle()
+
+      if (newStageErr) {
+        alert(`Erro ao copiar etapa: ${newStageErr.message}`)
+        return
+      }
+
+      if (!newStage?.id) {
+        alert('Não foi possível obter a nova etapa copiada.')
+        return
+      }
+
+      if (copyPhotos) {
+        const sourcePhotos = Array.isArray(copySourceStage.photos) ? copySourceStage.photos : []
+
+        if (sourcePhotos.length > 0) {
+          const rows = sourcePhotos.map((p) => ({
+            unit_stage_id: newStage.id,
+            user_id: user.id,
+            kind: p.kind || 'image',
+            path: p.path,
+            caption: safeStr(p.caption || ''),
+          }))
+
+          const { error: photosErr } = await supabase
+            .from('unit_stage_photos')
+            .insert(rows)
+
+          if (photosErr) {
+            alert(`A etapa foi copiada, mas houve erro ao copiar as fotos: ${photosErr.message}`)
+            return
+          }
+        }
+      }
+
+      await supabase.from('unit_stage_logs').insert({
+        unit_stage_id: copySourceStage.id,
+        user_id: user.id,
+        action: 'stage_copied',
+        old_value: {
+          source_stage_id: copySourceStage.id,
+          source_stage_name: copySourceStage.stage_name,
+        },
+        new_value: {
+          new_stage_id: newStage.id,
+          new_stage_name: targetName,
+          copied_structure: !!copyStructure,
+          copied_notes: !!copyNotes,
+          copied_photos: !!copyPhotos,
+        },
+      })
+
+      setCopyOpen(false)
+      await loadAll()
+    } finally {
+      setCopyBusy(false)
+    }
+  }
+
   async function addExistingStageToUnit() {
     if (!addStageId) return
     if (!unit?.id) return
@@ -878,7 +1120,9 @@ export default function UnidadePage() {
   }
 
   async function renameUnitStage(unitStageId, customName) {
+    const stageRow = stages.find((s) => s.id === unitStageId)
     const n = safeStr(customName).trim()
+
     setManageBusy(true)
     try {
       const { error } = await supabase.from('unit_stages').update({ custom_name: n || null }).eq('id', unitStageId)
@@ -886,6 +1130,17 @@ export default function UnidadePage() {
         alert(`Erro ao renomear etapa: ${error.message}`)
         return
       }
+
+      if (user?.id && stageRow) {
+        await supabase.from('unit_stage_logs').insert({
+          unit_stage_id: unitStageId,
+          user_id: user.id,
+          action: 'stage_renamed',
+          old_value: { name: stageRow.stage_name },
+          new_value: { name: n || stageRow.stage_template_name },
+        })
+      }
+
       await loadAll()
     } finally {
       setManageBusy(false)
@@ -1071,6 +1326,122 @@ export default function UnidadePage() {
                   >
                     Alterar
                   </button>
+
+                  <div
+                    style={{ position: 'relative' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      disabled={isBusy || isUploading}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenActionMenuStageId((prev) => (prev === s.id ? null : s.id))
+                      }}
+                      style={{
+                        width: 40,
+                        height: 36,
+                        borderRadius: 10,
+                        border: '1px solid #ddd',
+                        background: '#fff',
+                        cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
+                        fontWeight: 900,
+                        fontSize: 18,
+                        lineHeight: 1,
+                      }}
+                      title="Ações"
+                    >
+                      ⋯
+                    </button>
+
+                    {openActionMenuStageId === s.id ? (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: 42,
+                          right: 0,
+                          minWidth: 180,
+                          border: '1px solid #e8e8e8',
+                          background: '#fff',
+                          borderRadius: 12,
+                          boxShadow: '0 14px 30px rgba(0,0,0,0.12)',
+                          overflow: 'hidden',
+                          zIndex: 50,
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => openRenameModal(s)}
+                          style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '10px 12px',
+                            border: 'none',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Editar
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setStageArchivedState(s, s.is_active === false)}
+                          style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '10px 12px',
+                            border: 'none',
+                            borderTop: '1px solid #f1f1f1',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          {s.is_active === false ? 'Desarquivar' : 'Arquivar'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openCopyModal(s)}
+                          style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '10px 12px',
+                            border: 'none',
+                            borderTop: '1px solid #f1f1f1',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Copiar
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpenActionMenuStageId(null)
+                            deleteUnitStage(s.id, s.stage_name)
+                          }}
+                          style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '10px 12px',
+                            border: 'none',
+                            borderTop: '1px solid #f1f1f1',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                            color: '#b00020',
+                          }}
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
@@ -1362,6 +1733,166 @@ export default function UnidadePage() {
           )
         })}
       </div>
+
+      <Modal open={renameOpen} title="Editar etapa" onClose={() => setRenameOpen(false)} busy={renameBusy}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ fontSize: 13, color: '#666' }}>
+            Nome atual: <b>{renameStageCurrentName || '—'}</b>
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Nome da etapa</div>
+            <input
+              value={renameStageValue}
+              onChange={(e) => setRenameStageValue(e.target.value)}
+              disabled={renameBusy}
+              placeholder="Digite o novo nome da etapa"
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          <div style={{ fontSize: 12, color: '#777' }}>
+            Se deixar vazio, a etapa volta a usar o nome do modelo.
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setRenameOpen(false)}
+              disabled={renameBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: renameBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              type="button"
+              onClick={saveRenameStage}
+              disabled={renameBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: renameBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {renameBusy ? 'Salvando…' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={copyOpen} title="Copiar etapa" onClose={() => setCopyOpen(false)} busy={copyBusy}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ fontSize: 13, color: '#666' }}>
+            Etapa de origem: <b>{copySourceStage?.stage_name || '—'}</b>
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Nome da nova etapa</div>
+            <input
+              value={copyName}
+              onChange={(e) => setCopyName(e.target.value)}
+              disabled={copyBusy}
+              placeholder="Nome da nova etapa"
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Conteúdo a copiar</div>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={copyStructure}
+                onChange={(e) => setCopyStructure(e.target.checked)}
+                disabled={copyBusy}
+              />
+              <span>Estrutura</span>
+            </label>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={copyNotes}
+                onChange={(e) => setCopyNotes(e.target.checked)}
+                disabled={copyBusy}
+              />
+              <span>Observações</span>
+            </label>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={copyPhotos}
+                onChange={(e) => setCopyPhotos(e.target.checked)}
+                disabled={copyBusy}
+              />
+              <span>Fotos</span>
+            </label>
+          </div>
+
+          <div style={{ fontSize: 12, color: '#777' }}>
+            A nova etapa será criada como <b>Pendente</b> e o histórico antigo não será copiado.
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setCopyOpen(false)}
+              disabled={copyBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: copyBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              type="button"
+              onClick={copyStage}
+              disabled={copyBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: copyBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {copyBusy ? 'Copiando…' : 'Copiar etapa'}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={manageOpen} title="Gerenciar etapas da unidade" onClose={() => setManageOpen(false)} busy={manageBusy}>
         <div style={{ display: 'grid', gap: 14 }}>
