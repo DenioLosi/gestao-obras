@@ -41,9 +41,6 @@ function makeIdentifier(floor, unitIndex, pad2) {
   return `${floor}${suffix}`
 }
 
-/**
- * ✅ MODAL COM SCROLL INTERNO
- */
 function Modal({ open, title, onClose, children, busy }) {
   if (!open) return null
   return (
@@ -132,11 +129,8 @@ export default function ObraDetalhePage() {
 
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
-
-  // ✅ NOVO: etapas por unidade para métricas do card
   const [unitStagesByUnitId, setUnitStagesByUnitId] = useState({})
 
-  // Etapas (modelo)
   const [stageTemplates, setStageTemplates] = useState([])
   const [stagesOpen, setStagesOpen] = useState(false)
   const [stagesBusy, setStagesBusy] = useState(false)
@@ -144,12 +138,10 @@ export default function ObraDetalhePage() {
   const [newStageName, setNewStageName] = useState('')
   const [bulkStageLines, setBulkStageLines] = useState('')
 
-  // UI unidades
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [sortBy, setSortBy] = useState('identifier_asc')
 
-  // Gerar unidades
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkFloorStart, setBulkFloorStart] = useState(3)
@@ -177,7 +169,6 @@ export default function ObraDetalhePage() {
     const u = await ensureAuth()
     if (!u) return
 
-    // Projeto
     const { data: p, error: pErr } = await supabase
       .from('projects')
       .select('id, name, description, client_name, city, address')
@@ -195,7 +186,6 @@ export default function ObraDetalhePage() {
     }
     setProject(p || null)
 
-    // Etapas (modelo)
     const { data: st, error: stErr } = await supabase
       .from('stages')
       .select('id, name, order_index, is_active, project_id')
@@ -211,7 +201,6 @@ export default function ObraDetalhePage() {
       setStageTemplates(Array.isArray(st) ? st : [])
     }
 
-    // Unidades
     const { data: uRows, error: uErr } = await supabase
       .from('units')
       .select('id, project_id, identifier, status, progress')
@@ -229,12 +218,11 @@ export default function ObraDetalhePage() {
     const unitList = Array.isArray(uRows) ? uRows : []
     setUnits(unitList)
 
-    // ✅ NOVO: carregar etapas das unidades para métricas dos cards
     const unitIds = unitList.map((x) => x.id).filter(Boolean)
     if (unitIds.length > 0) {
       const { data: unitStages, error: usErr } = await supabase
         .from('unit_stages')
-        .select('id, unit_id, status, is_active')
+        .select('id, unit_id, status, is_active, notes')
         .in('unit_id', unitIds)
         .limit(1000000)
 
@@ -313,6 +301,7 @@ export default function ObraDetalhePage() {
     const doneStages = activeRows.filter((r) => safeStr(r.status) === 'done').length
     const pendingStages = activeRows.filter((r) => safeStr(r.status || 'pending') === 'pending').length
     const inProgressStages = activeRows.filter((r) => safeStr(r.status) === 'in_progress').length
+    const notesCount = activeRows.filter((r) => safeStr(r.notes).trim()).length
 
     let progressPct = 0
     if (totalStages > 0) {
@@ -333,6 +322,7 @@ export default function ObraDetalhePage() {
       doneStages,
       pendingStages,
       inProgressStages,
+      notesCount,
       progressPct,
       generalStatus,
     }
@@ -348,8 +338,6 @@ export default function ObraDetalhePage() {
     }
     await loadData()
   }
-
-  // ====== ETAPAS (MODELO) ======
 
   function getMaxOrderIndex() {
     return (stageTemplates || []).reduce((m, s) => {
@@ -471,8 +459,6 @@ export default function ObraDetalhePage() {
     await loadData()
   }
 
-  // ====== APLICAR MODELO (UNIDADES SEM ETAPAS) ======
-
   async function applyStagesToUnitsMissingAny(unitIds) {
     const ids = unitIds.filter(Boolean)
     if (ids.length === 0) return { created: 0, affectedUnits: 0 }
@@ -535,10 +521,6 @@ export default function ObraDetalhePage() {
     }
   }
 
-  // ====== ✅ ATUALIZAR MODELO (SINCRONIZAR TODAS AS UNIDADES) ======
-  // Faz:
-  // 1) Criar associações faltantes (unit_stages) para TODAS as unidades (sem duplicar)
-  // 2) Sincronizar unit_stages.is_active de acordo com stages.is_active (arquivar/reativar em massa)
   async function syncModelToAllUnits() {
     const ok = window.confirm(
       `ATUALIZAR MODELO EM TODAS AS UNIDADES?\n\n` +
@@ -641,8 +623,6 @@ export default function ObraDetalhePage() {
     }
   }
 
-  // ====== GERAR UNIDADES POR PAVIMENTO ======
-
   async function generateUnitsByFloor() {
     if (!projectId) {
       alert('Projeto não encontrado.')
@@ -716,7 +696,6 @@ export default function ObraDetalhePage() {
         if (Array.isArray(data)) created.push(...data)
       }
 
-      // cria unit_stages (apenas etapas ATIVAS)
       const stageIds = activeStages.map((s) => s.id)
       const rows = []
       for (const u of created) {
@@ -733,7 +712,6 @@ export default function ObraDetalhePage() {
         }
       }
 
-      // opcional: também aplicar em unidades antigas sem etapas
       if (bulkApplyStagesToExistingMissing) {
         const allUnitIds = [...(units || []).map((u) => u.id), ...created.map((x) => x.id)]
         await applyStagesToUnitsMissingAny(allUnitIds)
@@ -836,7 +814,6 @@ export default function ObraDetalhePage() {
 
       <hr style={{ margin: '18px 0' }} />
 
-      {/* Métricas */}
       <div style={{ maxWidth: 1100, display: 'grid', gap: 12 }}>
         <div style={{ display: 'grid', gap: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
@@ -868,7 +845,6 @@ export default function ObraDetalhePage() {
         </div>
       </div>
 
-      {/* Filtros */}
       <div style={{ marginTop: 16, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           value={search}
@@ -941,7 +917,6 @@ export default function ObraDetalhePage() {
         </div>
       </div>
 
-      {/* Lista unidades */}
       <div style={{ marginTop: 14, maxWidth: 1100, display: 'grid', gap: 10 }}>
         {filteredUnits.length === 0 ? (
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
@@ -1024,7 +999,7 @@ export default function ObraDetalhePage() {
                     </span>
 
                     <span>
-                      Pendências: <b>{metrics.pendingStages}</b>
+                      Observações: <b>{metrics.notesCount}</b>
                     </span>
                   </div>
 
@@ -1062,7 +1037,6 @@ export default function ObraDetalhePage() {
         )}
       </div>
 
-      {/* MODAL: Etapas da obra */}
       <Modal open={stagesOpen} title="Etapas da obra (modelo)" onClose={() => setStagesOpen(false)} busy={stagesBusy}>
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1277,7 +1251,6 @@ export default function ObraDetalhePage() {
         </div>
       </Modal>
 
-      {/* MODAL: Gerar unidades */}
       <Modal open={bulkOpen} title="Gerar unidades por pavimento" onClose={() => setBulkOpen(false)} busy={bulkBusy}>
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 13, color: '#444' }}>
