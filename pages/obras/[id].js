@@ -150,6 +150,15 @@ export default function ObraDetalhePage() {
   const [bulkPad2Digits, setBulkPad2Digits] = useState(true)
   const [bulkApplyStagesToExistingMissing, setBulkApplyStagesToExistingMissing] = useState(true)
 
+  const [openUnitMenuId, setOpenUnitMenuId] = useState(null)
+
+  useEffect(() => {
+    if (!openUnitMenuId) return
+    const close = () => setOpenUnitMenuId(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [openUnitMenuId])
+
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
     if (error || !data?.user) {
@@ -974,21 +983,86 @@ export default function ObraDetalhePage() {
                       </button>
                     </Link>
 
-                    <button
-                      onClick={() => deleteUnit(u.id, u.identifier)}
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: 12,
-                        border: '1px solid #ddd',
-                        background: '#fff',
-                        cursor: 'pointer',
-                        color: '#b00020',
-                        fontWeight: 900,
-                      }}
-                      title="Excluir unidade"
+                    <div
+                      style={{ position: 'relative' }}
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      Excluir
-                    </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setOpenUnitMenuId((prev) => (prev === u.id ? null : u.id))
+                        }}
+                        style={{
+                          width: 40,
+                          height: 36,
+                          borderRadius: 10,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: 'pointer',
+                          fontWeight: 900,
+                          fontSize: 18,
+                          lineHeight: 1,
+                        }}
+                        title="Ações"
+                      >
+                        ⋯
+                      </button>
+
+                      {openUnitMenuId === u.id ? (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 42,
+                            right: 0,
+                            minWidth: 170,
+                            border: '1px solid #e8e8e8',
+                            background: '#fff',
+                            borderRadius: 12,
+                            boxShadow: '0 14px 30px rgba(0,0,0,0.12)',
+                            overflow: 'hidden',
+                            zIndex: 50,
+                          }}
+                        >
+                          <Link href={`/unidades/${u.id}`} style={{ textDecoration: 'none' }}>
+                            <div
+                              style={{
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '10px 12px',
+                                background: '#fff',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                color: '#111',
+                              }}
+                            >
+                              Abrir
+                            </div>
+                          </Link>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenUnitMenuId(null)
+                              deleteUnit(u.id, u.identifier)
+                            }}
+                            style={{
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: '10px 12px',
+                              border: 'none',
+                              borderTop: '1px solid #f1f1f1',
+                              background: '#fff',
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              color: '#b00020',
+                            }}
+                          >
+                            Excluir
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
 
