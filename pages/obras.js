@@ -69,11 +69,14 @@ function Modal({ open, title, children, onClose }) {
           border: '1px solid #eee',
           boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
           padding: 16,
+          maxHeight: '90vh',
+          overflowY: 'auto',
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
           <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
           <button
+            type="button"
             onClick={onClose}
             style={{
               border: '1px solid #ddd',
@@ -103,6 +106,7 @@ export default function ObrasPainelPage() {
 
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('progress_desc')
+  const [showArchived, setShowArchived] = useState(false)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -113,6 +117,16 @@ export default function ObrasPainelPage() {
   const [formClientName, setFormClientName] = useState('')
   const [formCity, setFormCity] = useState('')
   const [formAddress, setFormAddress] = useState('')
+
+  const [openMenuProjectId, setOpenMenuProjectId] = useState(null)
+
+  useEffect(() => {
+    function closeMenus() {
+      setOpenMenuProjectId(null)
+    }
+    window.addEventListener('click', closeMenus)
+    return () => window.removeEventListener('click', closeMenus)
+  }, [])
 
   async function loadData() {
     setLoading(true)
@@ -154,6 +168,7 @@ export default function ObrasPainelPage() {
       address,
       created_at,
       tenant_id,
+      is_active,
       units (
         id,
         identifier,
@@ -177,7 +192,11 @@ export default function ObrasPainelPage() {
         return
       }
 
-      setProjects((data || []).map((x) => ({ ...x, units: Array.isArray(x.units) ? x.units : [] })))
+      setProjects((data || []).map((x) => ({
+        ...x,
+        is_active: x.is_active !== false,
+        units: Array.isArray(x.units) ? x.units : [],
+      })))
       setLoading(false)
       return
     }
@@ -216,7 +235,11 @@ export default function ObrasPainelPage() {
       return
     }
 
-    setProjects((data2 || []).map((x) => ({ ...x, units: Array.isArray(x.units) ? x.units : [] })))
+    setProjects((data2 || []).map((x) => ({
+      ...x,
+      is_active: x.is_active !== false,
+      units: Array.isArray(x.units) ? x.units : [],
+    })))
     setLoading(false)
   }
 
@@ -225,7 +248,9 @@ export default function ObrasPainelPage() {
   }, [])
 
   const cards = useMemo(() => {
-    return projects.map((p) => {
+    const base = showArchived ? projects : projects.filter((p) => p.is_active !== false)
+
+    return base.map((p) => {
       const total = (p.units || []).length
       const counts = { pending: 0, in_progress: 0, done: 0 }
       let sumProgress = 0
@@ -250,9 +275,10 @@ export default function ObrasPainelPage() {
         totalUnits: total,
         avgProgress: avg,
         counts,
+        is_active: p.is_active !== false,
       }
     })
-  }, [projects])
+  }, [projects, showArchived])
 
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -280,7 +306,6 @@ export default function ObrasPainelPage() {
       return 0
     })
 
-    list.sort((a, b) => safeStr(a?.name).localeCompare(safeStr(b?.name)))
     return list
   }, [cards, search, sortBy])
 
@@ -294,6 +319,7 @@ export default function ObrasPainelPage() {
     setFormCity('')
     setFormAddress('')
     setModalOpen(true)
+    setOpenMenuProjectId(null)
   }
 
   function openEditModal(card) {
@@ -304,6 +330,7 @@ export default function ObrasPainelPage() {
     setFormCity(safeStr(card.city))
     setFormAddress(safeStr(card.address))
     setModalOpen(true)
+    setOpenMenuProjectId(null)
   }
 
   function closeModal() {
@@ -339,11 +366,35 @@ export default function ObrasPainelPage() {
         const { error } = await supabase.from('projects').update(payload).eq('id', editProjectId)
         if (error) return alert(`Erro ao editar obra: ${error.message}`)
       } else {
+        payload.is_active = true
         const { error } = await supabase.from('projects').insert(payload)
         if (error) return alert(`Erro ao criar obra: ${error.message}`)
       }
 
       setModalOpen(false)
+      await loadData()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function archiveProject(card) {
+    if (!isAdmin) return
+
+    const actionLabel = card.is_active === false ? 'reativar' : 'arquivar'
+    const ok = window.confirm(`Deseja ${actionLabel} a obra "${card.name}"?`)
+    if (!ok) return
+
+    try {
+      setSaving(true)
+      const { error } = await supabase
+        .from('projects')
+        .update({ is_active: card.is_active === false ? true : false })
+        .eq('id', card.id)
+
+      if (error) return alert(`Erro ao atualizar obra: ${error.message}`)
+
+      setOpenMenuProjectId(null)
       await loadData()
     } finally {
       setSaving(false)
@@ -362,6 +413,7 @@ export default function ObrasPainelPage() {
       setSaving(true)
       const { error } = await supabase.from('projects').delete().eq('id', card.id)
       if (error) return alert(`Erro ao excluir obra: ${error.message}`)
+      setOpenMenuProjectId(null)
       await loadData()
     } finally {
       setSaving(false)
@@ -399,6 +451,7 @@ export default function ObrasPainelPage() {
 
           {isAdmin ? (
             <button
+              type="button"
               onClick={openCreateModal}
               style={{
                 padding: '10px 12px',
@@ -455,8 +508,18 @@ export default function ObrasPainelPage() {
           <option value="name_asc">Nome: A → Z</option>
         </select>
 
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#444' }}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Mostrar arquivadas
+        </label>
+
         {search ? (
           <button
+            type="button"
             onClick={() => setSearch('')}
             style={{
               padding: '10px 12px',
@@ -507,11 +570,19 @@ export default function ObrasPainelPage() {
                   boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
                   display: 'grid',
                   gap: 10,
+                  opacity: c.is_active === false ? 0.72 : 1,
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{c.name}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>
+                      {c.name}
+                      {c.is_active === false ? (
+                        <span style={{ marginLeft: 8, fontSize: 12, color: '#b00020', fontWeight: 900 }}>
+                          (Arquivada)
+                        </span>
+                      ) : null}
+                    </div>
 
                     {c.client_name || c.city ? (
                       <div style={{ color: '#444', fontSize: 13, lineHeight: 1.35 }}>
@@ -543,21 +614,104 @@ export default function ObrasPainelPage() {
                     </div>
 
                     {isAdmin ? (
-                      <button
-                        onClick={() => openEditModal(c)}
-                        style={{
-                          padding: '6px 10px',
-                          borderRadius: 12,
-                          border: '1px solid #ddd',
-                          background: '#fff',
-                          cursor: 'pointer',
-                          fontWeight: 800,
-                          height: 'fit-content',
-                        }}
-                        title="Editar obra"
+                      <div
+                        style={{ position: 'relative' }}
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        ⚙️
-                      </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setOpenMenuProjectId((prev) => (prev === c.id ? null : c.id))
+                          }}
+                          style={{
+                            width: 40,
+                            height: 36,
+                            borderRadius: 10,
+                            border: '1px solid #ddd',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            fontWeight: 900,
+                            fontSize: 18,
+                            lineHeight: 1,
+                          }}
+                          title="Ações"
+                        >
+                          ⋯
+                        </button>
+
+                        {openMenuProjectId === c.id ? (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: 42,
+                              right: 0,
+                              minWidth: 180,
+                              border: '1px solid #e8e8e8',
+                              background: '#fff',
+                              borderRadius: 12,
+                              boxShadow: '0 14px 30px rgba(0,0,0,0.12)',
+                              overflow: 'hidden',
+                              zIndex: 50,
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(c)}
+                              style={{
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '10px 12px',
+                                border: 'none',
+                                background: '#fff',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                color: '#111',
+                              }}
+                            >
+                              Editar
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => archiveProject(c)}
+                              disabled={saving}
+                              style={{
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '10px 12px',
+                                border: 'none',
+                                borderTop: '1px solid #f1f1f1',
+                                background: '#fff',
+                                cursor: saving ? 'not-allowed' : 'pointer',
+                                fontWeight: 700,
+                                color: '#111',
+                              }}
+                            >
+                              {c.is_active === false ? 'Reativar' : 'Arquivar'}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => deleteProject(c)}
+                              disabled={saving}
+                              style={{
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '10px 12px',
+                                border: 'none',
+                                borderTop: '1px solid #f1f1f1',
+                                background: '#fff',
+                                cursor: saving ? 'not-allowed' : 'pointer',
+                                fontWeight: 700,
+                                color: '#b00020',
+                              }}
+                            >
+                              Excluir
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 </div>
@@ -593,6 +747,7 @@ export default function ObrasPainelPage() {
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
                   <Link href={`/obras/${c.id}`} style={{ textDecoration: 'none' }}>
                     <button
+                      type="button"
                       style={{
                         padding: '10px 12px',
                         borderRadius: 12,
@@ -607,24 +762,39 @@ export default function ObrasPainelPage() {
                     </button>
                   </Link>
 
-                  {isAdmin ? (
+                  <Link href={`/obras/${c.id}/arquivos`} style={{ textDecoration: 'none' }}>
                     <button
-                      onClick={() => deleteProject(c)}
-                      disabled={saving}
+                      type="button"
                       style={{
                         padding: '10px 12px',
                         borderRadius: 12,
                         border: '1px solid #ddd',
                         background: '#fff',
-                        cursor: saving ? 'not-allowed' : 'pointer',
-                        color: '#b00020',
+                        color: '#111',
+                        cursor: 'pointer',
                         fontWeight: 800,
                       }}
-                      title="Excluir obra"
                     >
-                      Excluir
+                      Arquivos
                     </button>
-                  ) : null}
+                  </Link>
+
+                  <Link href={`/obras/${c.id}/relatorios`} style={{ textDecoration: 'none' }}>
+                    <button
+                      type="button"
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 12,
+                        border: '1px solid #ddd',
+                        background: '#fff',
+                        color: '#111',
+                        cursor: 'pointer',
+                        fontWeight: 800,
+                      }}
+                    >
+                      Relatórios
+                    </button>
+                  </Link>
                 </div>
 
                 <div style={{ fontSize: 12, color: '#777' }}>
@@ -707,6 +877,7 @@ export default function ObrasPainelPage() {
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 6 }}>
               <button
+                type="button"
                 onClick={closeModal}
                 disabled={saving}
                 style={{
@@ -722,6 +893,7 @@ export default function ObrasPainelPage() {
               </button>
 
               <button
+                type="button"
                 onClick={saveProject}
                 disabled={saving}
                 style={{
