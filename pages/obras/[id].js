@@ -3,6 +3,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
 
+const BUCKET = 'unit-stage-photos'
+
 const STATUS_LABEL = {
   pending: 'pendente',
   in_progress: 'em andamento',
@@ -39,6 +41,18 @@ function includesText(v, q) {
 function makeIdentifier(floor, unitIndex, pad2) {
   const suffix = pad2 ? String(unitIndex).padStart(2, '0') : String(unitIndex)
   return `${floor}${suffix}`
+}
+
+function randomId() {
+  return Math.random().toString(16).slice(2) + Date.now().toString(16)
+}
+
+function extFromPath(path) {
+  const p = safeStr(path).toLowerCase()
+  const i = p.lastIndexOf('.')
+  if (i === -1) return 'jpg'
+  const ext = p.slice(i + 1)
+  return ext || 'jpg'
 }
 
 function Modal({ open, title, onClose, children, busy }) {
@@ -84,6 +98,7 @@ function Modal({ open, title, onClose, children, busy }) {
         >
           <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
           <button
+            type="button"
             onClick={() => !busy && onClose?.()}
             style={{
               border: '1px solid #ddd',
@@ -141,6 +156,7 @@ export default function ObraDetalhePage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [sortBy, setSortBy] = useState('identifier_asc')
+  const [showArchivedUnits, setShowArchivedUnits] = useState(false)
 
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -151,6 +167,20 @@ export default function ObraDetalhePage() {
   const [bulkApplyStagesToExistingMissing, setBulkApplyStagesToExistingMissing] = useState(true)
 
   const [openUnitMenuId, setOpenUnitMenuId] = useState(null)
+
+  const [editUnitOpen, setEditUnitOpen] = useState(false)
+  const [editUnitBusy, setEditUnitBusy] = useState(false)
+  const [editUnitId, setEditUnitId] = useState('')
+  const [editUnitIdentifier, setEditUnitIdentifier] = useState('')
+
+  const [copyOpen, setCopyOpen] = useState(false)
+  const [copyBusy, setCopyBusy] = useState(false)
+  const [copySourceUnitId, setCopySourceUnitId] = useState('')
+  const [copySourceUnitLabel, setCopySourceUnitLabel] = useState('')
+  const [copyTargets, setCopyTargets] = useState(new Set())
+  const [copyStructure, setCopyStructure] = useState(true)
+  const [copyObservations, setCopyObservations] = useState(false)
+  const [copyPhotos, setCopyPhotos] = useState(false)
 
   useEffect(() => {
     if (!openUnitMenuId) return
@@ -212,7 +242,7 @@ export default function ObraDetalhePage() {
 
     const { data: uRows, error: uErr } = await supabase
       .from('units')
-      .select('id, project_id, identifier, status, progress')
+      .select('id, project_id, identifier, status, progress, is_active')
       .eq('project_id', projectId)
       .order('identifier', { ascending: true })
 
@@ -231,7 +261,17 @@ export default function ObraDetalhePage() {
     if (unitIds.length > 0) {
       const { data: unitStages, error: usErr } = await supabase
         .from('unit_stages')
-        .select('id, unit_id, status, is_active, notes')
+        .select(`
+          id,
+          unit_id,
+          stage_id,
+          status,
+          is_active,
+          notes,
+          custom_name,
+          order_index,
+          unit_stage_photos ( id, path, caption, kind, created_at, user_id )
+        `)
         .in('unit_id', unitIds)
         .limit(1000000)
 
@@ -244,7 +284,10 @@ export default function ObraDetalhePage() {
         for (const row of unitStages || []) {
           const key = safeStr(row.unit_id)
           if (!grouped[key]) grouped[key] = []
-          grouped[key].push(row)
+          grouped[key].push({
+            ...row,
+            unit_stage_photos: Array.isArray(row.unit_stage_photos) ? row.unit_stage_photos : [],
+          })
         }
         setUnitStagesByUnitId(grouped)
       }
@@ -267,24 +310,30 @@ export default function ObraDetalhePage() {
     return stageTemplates.filter((s) => s.is_active !== false)
   }, [stageTemplates, showArchivedStages])
 
+  const visibleUnits = useMemo(() => {
+    return showArchivedUnits ? units : units.filter((u) => u.is_active !== false)
+  }, [units, showArchivedUnits])
+
   const stats = useMemo(() => {
     const counts = { pending: 0, in_progress: 0, done: 0 }
     let sum = 0
     let total = 0
-    for (const u of units) {
+
+    for (const u of visibleUnits) {
       const st = u.status || 'pending'
       if (counts[st] === undefined) counts[st] = 0
       counts[st] += 1
       sum += clampPct(u.progress)
       total += 1
     }
+
     const avg = total > 0 ? sum / total : 0
     return { counts, total, avg }
-  }, [units])
+  }, [visibleUnits])
 
   const filteredUnits = useMemo(() => {
     const q = search.trim().toLowerCase()
-    let list = [...(units || [])]
+    let list = [...visibleUnits]
 
     if (statusFilter !== 'all') list = list.filter((u) => (u.status || 'pending') === statusFilter)
     if (q) list = list.filter((u) => includesText(u.identifier, q))
@@ -300,7 +349,7 @@ export default function ObraDetalhePage() {
     })
 
     return list
-  }, [units, search, statusFilter, sortBy])
+  }, [visibleUnits, search, statusFilter, sortBy])
 
   function getUnitStageMetrics(unitId, unitProgress, unitStatus) {
     const rows = unitStagesByUnitId[safeStr(unitId)] || []
@@ -337,6 +386,40 @@ export default function ObraDetalhePage() {
     }
   }
 
+  function openEditUnitModal(unitRow) {
+    setEditUnitId(unitRow.id)
+    setEditUnitIdentifier(unitRow.identifier || '')
+    setEditUnitOpen(true)
+    setOpenUnitMenuId(null)
+  }
+
+  async function saveUnitEdit() {
+    const identifier = safeStr(editUnitIdentifier).trim()
+    if (!editUnitId) return
+    if (!identifier) {
+      alert('Informe o identificador da unidade.')
+      return
+    }
+
+    setEditUnitBusy(true)
+    try {
+      const { error } = await supabase
+        .from('units')
+        .update({ identifier })
+        .eq('id', editUnitId)
+
+      if (error) {
+        alert(`Erro ao editar unidade: ${error.message}`)
+        return
+      }
+
+      setEditUnitOpen(false)
+      await loadData()
+    } finally {
+      setEditUnitBusy(false)
+    }
+  }
+
   async function deleteUnit(unitId, identifier) {
     const ok = window.confirm(`Excluir unidade ${identifier || ''}?`)
     if (!ok) return
@@ -346,6 +429,269 @@ export default function ObraDetalhePage() {
       return
     }
     await loadData()
+  }
+
+  async function archiveUnit(unitRow) {
+    const label = unitRow.is_active === false ? 'reativar' : 'arquivar'
+    const ok = window.confirm(`Deseja ${label} a unidade ${unitRow.identifier || ''}?`)
+    if (!ok) return
+
+    const { error } = await supabase
+      .from('units')
+      .update({ is_active: unitRow.is_active === false ? true : false })
+      .eq('id', unitRow.id)
+
+    if (error) {
+      alert(`Erro ao atualizar unidade: ${error.message}`)
+      return
+    }
+
+    setOpenUnitMenuId(null)
+    await loadData()
+  }
+
+  function openCopyModal(unitRow) {
+    setCopySourceUnitId(unitRow.id)
+    setCopySourceUnitLabel(unitRow.identifier || unitRow.id)
+    setCopyTargets(new Set())
+    setCopyStructure(true)
+    setCopyObservations(false)
+    setCopyPhotos(false)
+    setCopyOpen(true)
+    setOpenUnitMenuId(null)
+  }
+
+  function toggleCopyTarget(unitId) {
+    setCopyTargets((prev) => {
+      const next = new Set(prev)
+      const key = safeStr(unitId)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function markAllCopyTargets() {
+    const ids = units
+      .filter((u) => safeStr(u.id) !== safeStr(copySourceUnitId))
+      .map((u) => safeStr(u.id))
+    setCopyTargets(new Set(ids))
+  }
+
+  function unmarkAllCopyTargets() {
+    setCopyTargets(new Set())
+  }
+
+  async function copyUnitContent() {
+    const sourceUnitId = safeStr(copySourceUnitId)
+    const targetUnitIds = [...copyTargets].filter(Boolean)
+
+    if (!sourceUnitId) {
+      alert('Unidade de origem não encontrada.')
+      return
+    }
+
+    if (targetUnitIds.length === 0) {
+      alert('Selecione pelo menos 1 unidade de destino.')
+      return
+    }
+
+    if (!copyStructure && !copyObservations && !copyPhotos) {
+      alert('Selecione pelo menos 1 item para copiar.')
+      return
+    }
+
+    const sourceStages = (unitStagesByUnitId[sourceUnitId] || [])
+      .filter((r) => r.is_active !== false)
+      .slice()
+      .sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0))
+
+    if (sourceStages.length === 0) {
+      alert('A unidade de origem não possui etapas ativas para copiar.')
+      return
+    }
+
+    setCopyBusy(true)
+    try {
+      const targetRows = []
+      for (const targetUnitId of targetUnitIds) {
+        const targetStages = unitStagesByUnitId[safeStr(targetUnitId)] || []
+        for (const stage of targetStages) targetRows.push(stage)
+      }
+
+      const targetMap = {}
+      for (const row of targetRows) {
+        const unitKey = safeStr(row.unit_id)
+        if (!targetMap[unitKey]) targetMap[unitKey] = {}
+
+        const keyByStage = safeStr(row.stage_id)
+        const keyByCustom = `${safeStr(row.stage_id)}::${safeStr(row.custom_name)}`
+        if (keyByStage && !targetMap[unitKey][keyByStage]) targetMap[unitKey][keyByStage] = row
+        if (!targetMap[unitKey][keyByCustom]) targetMap[unitKey][keyByCustom] = row
+      }
+
+      if (copyStructure) {
+        const inserts = []
+
+        for (const targetUnitId of targetUnitIds) {
+          const mapForUnit = targetMap[safeStr(targetUnitId)] || {}
+
+          for (const src of sourceStages) {
+            const keyByStage = safeStr(src.stage_id)
+            const keyByCustom = `${safeStr(src.stage_id)}::${safeStr(src.custom_name)}`
+            const exists = mapForUnit[keyByCustom] || mapForUnit[keyByStage]
+
+            if (!exists) {
+              inserts.push({
+                unit_id: targetUnitId,
+                stage_id: src.stage_id || null,
+                custom_name: src.custom_name || null,
+                order_index: src.order_index ?? null,
+                is_active: src.is_active !== false,
+                status: 'pending',
+                notes: null,
+              })
+            }
+          }
+        }
+
+        const B = 300
+        for (let i = 0; i < inserts.length; i += B) {
+          const chunk = inserts.slice(i, i + B)
+          const { error } = await supabase.from('unit_stages').insert(chunk)
+          if (error) {
+            alert(`Erro ao copiar estrutura: ${error.message}`)
+            return
+          }
+        }
+      }
+
+      const { data: refreshedTargetStages, error: refreshedErr } = await supabase
+        .from('unit_stages')
+        .select(`
+          id,
+          unit_id,
+          stage_id,
+          status,
+          is_active,
+          notes,
+          custom_name,
+          order_index,
+          unit_stage_photos ( id, path, caption, kind, created_at, user_id )
+        `)
+        .in('unit_id', targetUnitIds)
+        .limit(1000000)
+
+      if (refreshedErr) {
+        alert(`Erro ao recarregar etapas destino: ${refreshedErr.message}`)
+        return
+      }
+
+      const refreshedMap = {}
+      for (const row of refreshedTargetStages || []) {
+        const unitKey = safeStr(row.unit_id)
+        if (!refreshedMap[unitKey]) refreshedMap[unitKey] = {}
+
+        const keyByStage = safeStr(row.stage_id)
+        const keyByCustom = `${safeStr(row.stage_id)}::${safeStr(row.custom_name)}`
+        if (keyByStage && !refreshedMap[unitKey][keyByStage]) refreshedMap[unitKey][keyByStage] = row
+        if (!refreshedMap[unitKey][keyByCustom]) refreshedMap[unitKey][keyByCustom] = row
+      }
+
+      if (copyObservations) {
+        for (const targetUnitId of targetUnitIds) {
+          const mapForUnit = refreshedMap[safeStr(targetUnitId)] || []
+
+          for (const src of sourceStages) {
+            const srcNotes = safeStr(src.notes).trim()
+            if (!srcNotes) continue
+
+            const keyByStage = safeStr(src.stage_id)
+            const keyByCustom = `${safeStr(src.stage_id)}::${safeStr(src.custom_name)}`
+            const targetStage = mapForUnit[keyByCustom] || mapForUnit[keyByStage]
+            if (!targetStage) continue
+
+            const { error } = await supabase
+              .from('unit_stages')
+              .update({ notes: srcNotes })
+              .eq('id', targetStage.id)
+
+            if (error) {
+              alert(`Erro ao copiar observações: ${error.message}`)
+              return
+            }
+          }
+        }
+      }
+
+      if (copyPhotos) {
+        for (const targetUnitId of targetUnitIds) {
+          const mapForUnit = refreshedMap[safeStr(targetUnitId)] || {}
+
+          for (const src of sourceStages) {
+            const sourcePhotos = Array.isArray(src.unit_stage_photos) ? src.unit_stage_photos : []
+            if (sourcePhotos.length === 0) continue
+
+            const keyByStage = safeStr(src.stage_id)
+            const keyByCustom = `${safeStr(src.stage_id)}::${safeStr(src.custom_name)}`
+            const targetStage = mapForUnit[keyByCustom] || mapForUnit[keyByStage]
+            if (!targetStage) continue
+
+            for (const photo of sourcePhotos) {
+              if (!photo.path) continue
+
+              const { data: fileData, error: downloadErr } = await supabase
+                .storage
+                .from(BUCKET)
+                .download(photo.path)
+
+              if (downloadErr || !fileData) {
+                alert(`Erro ao copiar foto: ${downloadErr?.message || 'falha no download'}`)
+                return
+              }
+
+              const ext = extFromPath(photo.path)
+              const newPath = `units/${targetUnitId}/unit_stages/${targetStage.id}/${randomId()}.${ext}`
+
+              const { error: uploadErr } = await supabase
+                .storage
+                .from(BUCKET)
+                .upload(newPath, fileData, {
+                  cacheControl: '3600',
+                  upsert: false,
+                  contentType: fileData.type || undefined,
+                })
+
+              if (uploadErr) {
+                alert(`Erro ao subir foto copiada: ${uploadErr.message}`)
+                return
+              }
+
+              const { error: insertPhotoErr } = await supabase
+                .from('unit_stage_photos')
+                .insert({
+                  unit_stage_id: targetStage.id,
+                  user_id: null,
+                  kind: photo.kind || 'image',
+                  path: newPath,
+                  caption: photo.caption || '',
+                })
+
+              if (insertPhotoErr) {
+                alert(`Erro ao registrar foto copiada: ${insertPhotoErr.message}`)
+                return
+              }
+            }
+          }
+        }
+      }
+
+      setCopyOpen(false)
+      await loadData()
+      alert('Cópia concluída com sucesso.')
+    } finally {
+      setCopyBusy(false)
+    }
   }
 
   function getMaxOrderIndex() {
@@ -690,6 +1036,7 @@ export default function ObraDetalhePage() {
         identifier,
         status: 'pending',
         progress: 0,
+        is_active: true,
       }))
 
       const created = []
@@ -788,6 +1135,15 @@ export default function ObraDetalhePage() {
         </div>
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#444' }}>
+            <input
+              type="checkbox"
+              checked={showArchivedUnits}
+              onChange={(e) => setShowArchivedUnits(e.target.checked)}
+            />
+            Mostrar arquivadas
+          </label>
+
           <button
             onClick={() => setStagesOpen(true)}
             style={{
@@ -922,7 +1278,7 @@ export default function ObraDetalhePage() {
         ) : null}
 
         <div style={{ fontSize: 12, color: '#666' }}>
-          Mostrando <b>{filteredUnits.length}</b> de <b>{units.length}</b>
+          Mostrando <b>{filteredUnits.length}</b> de <b>{visibleUnits.length}</b>
         </div>
       </div>
 
@@ -945,11 +1301,15 @@ export default function ObraDetalhePage() {
                   boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
                   display: 'grid',
                   gap: 12,
+                  opacity: u.is_active === false ? 0.7 : 1,
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                    <div style={{ fontSize: 20, fontWeight: 900 }}>Unidade {u.identifier || u.id}</div>
+                    <div style={{ fontSize: 20, fontWeight: 900 }}>
+                      Unidade {u.identifier || u.id}
+                    </div>
+
                     <span
                       style={{
                         fontSize: 12,
@@ -964,11 +1324,18 @@ export default function ObraDetalhePage() {
                     >
                       {STATUS_PT[metrics.generalStatus] || '—'}
                     </span>
+
+                    {u.is_active === false ? (
+                      <span style={{ fontSize: 12, color: '#b00020', fontWeight: 900 }}>
+                        (Arquivada)
+                      </span>
+                    ) : null}
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                     <Link href={`/unidades/${u.id}`} style={{ textDecoration: 'none' }}>
                       <button
+                        type="button"
                         style={{
                           padding: '10px 12px',
                           borderRadius: 12,
@@ -1015,7 +1382,7 @@ export default function ObraDetalhePage() {
                             position: 'absolute',
                             top: 42,
                             right: 0,
-                            minWidth: 170,
+                            minWidth: 180,
                             border: '1px solid #e8e8e8',
                             background: '#fff',
                             borderRadius: 12,
@@ -1024,21 +1391,58 @@ export default function ObraDetalhePage() {
                             zIndex: 50,
                           }}
                         >
-                          <Link href={`/unidades/${u.id}`} style={{ textDecoration: 'none' }}>
-                            <div
-                              style={{
-                                width: '100%',
-                                textAlign: 'left',
-                                padding: '10px 12px',
-                                background: '#fff',
-                                cursor: 'pointer',
-                                fontWeight: 700,
-                                color: '#111',
-                              }}
-                            >
-                              Abrir
-                            </div>
-                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => openEditUnitModal(u)}
+                            style={{
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: '10px 12px',
+                              border: 'none',
+                              background: '#fff',
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              color: '#111',
+                            }}
+                          >
+                            Editar
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => openCopyModal(u)}
+                            style={{
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: '10px 12px',
+                              border: 'none',
+                              borderTop: '1px solid #f1f1f1',
+                              background: '#fff',
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              color: '#111',
+                            }}
+                          >
+                            Copiar
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => archiveUnit(u)}
+                            style={{
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: '10px 12px',
+                              border: 'none',
+                              borderTop: '1px solid #f1f1f1',
+                              background: '#fff',
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              color: '#111',
+                            }}
+                          >
+                            {u.is_active === false ? 'Reativar' : 'Arquivar'}
+                          </button>
 
                           <button
                             type="button"
@@ -1111,6 +1515,227 @@ export default function ObraDetalhePage() {
         )}
       </div>
 
+      <Modal open={editUnitOpen} title="Editar unidade" onClose={() => setEditUnitOpen(false)} busy={editUnitBusy}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Identificador da unidade *</div>
+            <input
+              value={editUnitIdentifier}
+              onChange={(e) => setEditUnitIdentifier(e.target.value)}
+              placeholder="Ex: 401"
+              disabled={editUnitBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setEditUnitOpen(false)}
+              disabled={editUnitBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: editUnitBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              type="button"
+              onClick={saveUnitEdit}
+              disabled={editUnitBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: editUnitBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {editUnitBusy ? 'Salvando…' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={copyOpen} title={`Copiar conteúdo da unidade ${copySourceUnitLabel}`} onClose={() => setCopyOpen(false)} busy={copyBusy}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 13, color: '#444', fontWeight: 900 }}>O que copiar</div>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: copyBusy ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={copyStructure}
+                onChange={(e) => setCopyStructure(e.target.checked)}
+                disabled={copyBusy}
+              />
+              <span style={{ fontSize: 13, color: '#444' }}>
+                Estrutura
+              </span>
+            </label>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: copyBusy ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={copyObservations}
+                onChange={(e) => setCopyObservations(e.target.checked)}
+                disabled={copyBusy}
+              />
+              <span style={{ fontSize: 13, color: '#444' }}>
+                Observações
+              </span>
+            </label>
+
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: copyBusy ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={copyPhotos}
+                onChange={(e) => setCopyPhotos(e.target.checked)}
+                disabled={copyBusy}
+              />
+              <span style={{ fontSize: 13, color: '#444' }}>
+                Fotos
+              </span>
+            </label>
+
+            <div style={{ fontSize: 12, color: '#777' }}>
+              Dica: se marcar apenas <b>Estrutura</b>, serão copiadas somente as etapas, sem observações e sem fotos.
+            </div>
+          </div>
+
+          <hr style={{ margin: '4px 0' }} />
+
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 13, color: '#444', fontWeight: 900 }}>Selecionar unidades de destino</div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={markAllCopyTargets}
+                disabled={copyBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: copyBusy ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
+              >
+                Marcar todas
+              </button>
+
+              <button
+                type="button"
+                onClick={unmarkAllCopyTargets}
+                disabled={copyBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  cursor: copyBusy ? 'not-allowed' : 'pointer',
+                  fontWeight: 900,
+                }}
+              >
+                Desmarcar todas
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gap: 8, maxHeight: 360, overflowY: 'auto', paddingRight: 4 }}>
+              {units.filter((u) => safeStr(u.id) !== safeStr(copySourceUnitId)).length === 0 ? (
+                <div style={{ color: '#666' }}>Nenhuma outra unidade disponível.</div>
+              ) : (
+                units
+                  .filter((u) => safeStr(u.id) !== safeStr(copySourceUnitId))
+                  .map((u) => {
+                    const checked = copyTargets.has(safeStr(u.id))
+                    return (
+                      <label
+                        key={u.id}
+                        style={{
+                          display: 'flex',
+                          gap: 10,
+                          alignItems: 'center',
+                          border: '1px solid #eee',
+                          borderRadius: 12,
+                          padding: 10,
+                          background: '#fff',
+                          cursor: copyBusy ? 'not-allowed' : 'pointer',
+                          opacity: copyBusy ? 0.7 : 1,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleCopyTarget(u.id)}
+                          disabled={copyBusy}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 900 }}>
+                            Unidade {u.identifier || u.id}
+                          </div>
+                          {u.is_active === false ? (
+                            <div style={{ fontSize: 12, color: '#b00020' }}>Arquivada</div>
+                          ) : null}
+                        </div>
+                      </label>
+                    )
+                  })
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => setCopyOpen(false)}
+              disabled={copyBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: copyBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              type="button"
+              onClick={copyUnitContent}
+              disabled={copyBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: copyBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {copyBusy ? 'Copiando…' : 'Confirmar cópia'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal open={stagesOpen} title="Etapas da obra (modelo)" onClose={() => setStagesOpen(false)} busy={stagesBusy}>
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1129,6 +1754,7 @@ export default function ObraDetalhePage() {
             />
 
             <button
+              type="button"
               onClick={() => createStageTemplate(newStageName)}
               disabled={stagesBusy}
               style={{
@@ -1145,6 +1771,7 @@ export default function ObraDetalhePage() {
             </button>
 
             <button
+              type="button"
               onClick={applyStagesToAllExistingMissing}
               disabled={stagesBusy}
               style={{
@@ -1161,6 +1788,7 @@ export default function ObraDetalhePage() {
             </button>
 
             <button
+              type="button"
               onClick={syncModelToAllUnits}
               disabled={stagesBusy}
               style={{
@@ -1207,6 +1835,7 @@ export default function ObraDetalhePage() {
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
+                type="button"
                 onClick={bulkAddStagesFromLines}
                 disabled={stagesBusy}
                 style={{
@@ -1267,6 +1896,7 @@ export default function ObraDetalhePage() {
 
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <button
+                        type="button"
                         onClick={() => moveStage(s.id, -1)}
                         disabled={stagesBusy}
                         style={{
@@ -1283,6 +1913,7 @@ export default function ObraDetalhePage() {
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => moveStage(s.id, +1)}
                         disabled={stagesBusy}
                         style={{
@@ -1299,6 +1930,7 @@ export default function ObraDetalhePage() {
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => archiveStage(s.id, s.is_active !== false)}
                         disabled={stagesBusy}
                         style={{
@@ -1388,6 +2020,7 @@ export default function ObraDetalhePage() {
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
             <button
+              type="button"
               onClick={() => setBulkOpen(false)}
               disabled={bulkBusy}
               style={{
@@ -1403,6 +2036,7 @@ export default function ObraDetalhePage() {
             </button>
 
             <button
+              type="button"
               onClick={generateUnitsByFloor}
               disabled={bulkBusy || activeStages.length === 0}
               style={{
