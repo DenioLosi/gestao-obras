@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../../lib/supabase'
+import html2canvas from 'html2canvas'
+import { jsPDF } from 'jspdf'
 
 const REPORT_MODE = {
   diary: 'diary',
@@ -128,6 +130,7 @@ function getLogExtra(log) {
 export default function ObraRelatoriosPage() {
   const router = useRouter()
   const { id } = router.query
+  const reportRef = useRef(null)
 
   const projectId = useMemo(() => {
     if (!id) return null
@@ -137,6 +140,7 @@ export default function ObraRelatoriosPage() {
 
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [exportingPdf, setExportingPdf] = useState(false)
 
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
@@ -628,6 +632,71 @@ export default function ObraRelatoriosPage() {
     }
   }
 
+  async function exportCurrentReportToPdf() {
+    if (!reportRef.current || !project) return
+
+    setExportingPdf(true)
+
+    try {
+      const modeLabel =
+        mode === REPORT_MODE.diary
+          ? 'diario-de-obra'
+          : mode === REPORT_MODE.period
+          ? 'resumo-por-periodo'
+          : 'observacoes-e-pendencias'
+
+      const dateLabel =
+        mode === REPORT_MODE.diary
+          ? safeStr(diaryDate)
+          : `${safeStr(startDate)}_a_${safeStr(endDate)}`
+
+      const fileName = `${safeStr(project.name || 'obra')
+        .replace(/[^\w\-]+/g, '_')
+        .replace(/_+/g, '_')}_${modeLabel}_${dateLabel}.pdf`
+
+      const canvas = await html2canvas(reportRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        windowWidth: reportRef.current.scrollWidth,
+      })
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.95)
+
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+
+      const margin = 8
+      const usableWidth = pageWidth - margin * 2
+      const usableHeight = pageHeight - margin * 2
+
+      const imgWidth = usableWidth
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+
+      let heightLeft = imgHeight
+      let position = margin
+
+      pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
+      heightLeft -= usableHeight
+
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight + margin
+        pdf.addPage()
+        pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
+        heightLeft -= usableHeight
+      }
+
+      pdf.save(fileName)
+    } catch (error) {
+      console.error(error)
+      alert(`Erro ao gerar PDF: ${error?.message || error}`)
+    } finally {
+      setExportingPdf(false)
+    }
+  }
+
   if (loading) {
     return (
       <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -697,10 +766,31 @@ export default function ObraRelatoriosPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" onClick={rerun} disabled={running} style={buttonStyle}>
+          <button
+            type="button"
+            onClick={rerun}
+            disabled={running}
+            style={buttonStyle}
+            data-html2canvas-ignore="true"
+          >
             {running ? 'Atualizando...' : 'Atualizar relatório'}
           </button>
-          <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }}>
+
+          <button
+            type="button"
+            onClick={exportCurrentReportToPdf}
+            disabled={exportingPdf}
+            style={buttonStyle}
+            data-html2canvas-ignore="true"
+          >
+            {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
+          </button>
+
+          <Link
+            href={`/obras/${project.id}`}
+            style={{ textDecoration: 'none' }}
+            data-html2canvas-ignore="true"
+          >
             ← Voltar para obra
           </Link>
         </div>
@@ -708,7 +798,7 @@ export default function ObraRelatoriosPage() {
 
       <hr style={{ margin: '18px 0' }} />
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }} data-html2canvas-ignore="true">
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.diary)}
@@ -746,468 +836,470 @@ export default function ObraRelatoriosPage() {
         </button>
       </div>
 
-      {mode === REPORT_MODE.diary ? (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
+      <div ref={reportRef} style={{ background: '#fff', padding: 4 }}>
+        {mode === REPORT_MODE.diary ? (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
-                <input
-                  type="date"
-                  value={diaryDate}
-                  onChange={(e) => setDiaryDate(e.target.value)}
-                  style={inputStyle}
-                />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
+                  <input
+                    type="date"
+                    value={diaryDate}
+                    onChange={(e) => setDiaryDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
               </div>
             </div>
-          </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div>
-            </div>
-          </div>
-
-          <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Diário de obra — {formatDate(diaryDate)}
-            </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Relatório automático com base no histórico e nas fotos lançadas no dia.
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div>
+              </div>
             </div>
 
-            {diaryEventsByUnit.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhuma movimentação encontrada nesta data.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 14 }}>
-                {diaryEventsByUnit.map((block) => (
-                  <div
-                    key={block.unit?.id || Math.random()}
-                    style={{
-                      border: '1px solid #eee',
-                      borderRadius: 14,
-                      padding: 14,
-                      background: '#fafafa',
-                    }}
-                  >
-                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>
-                      Unidade {safeStr(block.unit?.identifier) || '-'}
-                    </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
+                Diário de obra — {formatDate(diaryDate)}
+              </div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
+                Relatório automático com base no histórico e nas fotos lançadas no dia.
+              </div>
 
-                    <div style={{ display: 'grid', gap: 10 }}>
-                      {block.events.map((event, index) => (
-                        <div
-                          key={`${event.type}_${event.created_at}_${index}`}
-                          style={{
-                            border: '1px solid #eee',
-                            borderRadius: 12,
-                            padding: 12,
-                            background: '#fff',
-                          }}
-                        >
-                          <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
-                            {formatDateTime(event.created_at)}
-                          </div>
-                          <div style={{ fontSize: 15, fontWeight: 800 }}>
-                            {event.stage_name} — {event.title}
-                          </div>
-                          {event.extra ? (
-                            <div style={{ fontSize: 13, color: '#444', marginTop: 6 }}>
-                              {event.extra}
+              {diaryEventsByUnit.length === 0 ? (
+                <div style={{ color: '#666' }}>Nenhuma movimentação encontrada nesta data.</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 14 }}>
+                  {diaryEventsByUnit.map((block, blockIndex) => (
+                    <div
+                      key={block.unit?.id || blockIndex}
+                      style={{
+                        border: '1px solid #eee',
+                        borderRadius: 14,
+                        padding: 14,
+                        background: '#fafafa',
+                      }}
+                    >
+                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>
+                        Unidade {safeStr(block.unit?.identifier) || '-'}
+                      </div>
+
+                      <div style={{ display: 'grid', gap: 10 }}>
+                        {block.events.map((event, index) => (
+                          <div
+                            key={`${event.type}_${event.created_at}_${index}`}
+                            style={{
+                              border: '1px solid #eee',
+                              borderRadius: 12,
+                              padding: 12,
+                              background: '#fff',
+                            }}
+                          >
+                            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
+                              {formatDateTime(event.created_at)}
                             </div>
-                          ) : null}
-                        </div>
-                      ))}
+                            <div style={{ fontSize: 15, fontWeight: 800 }}>
+                              {event.stage_name} — {event.title}
+                            </div>
+                            {event.extra ? (
+                              <div style={{ fontSize: 13, color: '#444', marginTop: 6 }}>
+                                {event.extra}
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : null}
+
+        {mode === REPORT_MODE.period ? (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
               </div>
-            )}
-          </div>
-        </>
-      ) : null}
+            </div>
 
-      {mode === REPORT_MODE.period ? (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  style={inputStyle}
-                />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div>
               </div>
-
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  style={inputStyle}
-                />
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Registros no período</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div>
               </div>
             </div>
-          </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Registros no período</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div>
-            </div>
-          </div>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
+                Resumo do período — {formatDate(startDate)} até {formatDate(endDate)}
+              </div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
+                Consolidado automático de atividades, movimentações e produção por etapa.
+              </div>
 
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Resumo do período — {formatDate(startDate)} até {formatDate(endDate)}
-            </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Consolidado automático de atividades, movimentações e produção por etapa.
-            </div>
-
-            {periodSummary.stages.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhuma movimentação encontrada no período selecionado.</div>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
-                      <th style={{ padding: '10px 8px' }}>Etapa</th>
-                      <th style={{ padding: '10px 8px' }}>Iniciadas</th>
-                      <th style={{ padding: '10px 8px' }}>Concluídas</th>
-                      <th style={{ padding: '10px 8px' }}>Observações</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {periodSummary.stages.map((row, index) => (
-                      <tr key={`${row.stage_name}_${index}`} style={{ borderBottom: '1px solid #f1f1f1' }}>
-                        <td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.stage_name}</td>
-                        <td style={{ padding: '10px 8px' }}>{row.started}</td>
-                        <td style={{ padding: '10px 8px' }}>{row.finished}</td>
-                        <td style={{ padding: '10px 8px' }}>{row.observations}</td>
+              {periodSummary.stages.length === 0 ? (
+                <div style={{ color: '#666' }}>Nenhuma movimentação encontrada no período selecionado.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
+                        <th style={{ padding: '10px 8px' }}>Etapa</th>
+                        <th style={{ padding: '10px 8px' }}>Iniciadas</th>
+                        <th style={{ padding: '10px 8px' }}>Concluídas</th>
+                        <th style={{ padding: '10px 8px' }}>Observações</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {periodSummary.stages.map((row, index) => (
+                        <tr key={`${row.stage_name}_${index}`} style={{ borderBottom: '1px solid #f1f1f1' }}>
+                          <td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.stage_name}</td>
+                          <td style={{ padding: '10px 8px' }}>{row.started}</td>
+                          <td style={{ padding: '10px 8px' }}>{row.finished}</td>
+                          <td style={{ padding: '10px 8px' }}>{row.observations}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div style={cardStyle}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
+                Unidades com menor progresso
               </div>
-            )}
-          </div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
+                Apoio rápido para identificar gargalos e frentes atrasadas.
+              </div>
 
-          <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Unidades com menor progresso
-            </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Apoio rápido para identificar gargalos e frentes atrasadas.
-            </div>
+              {lowestProgressUnits.length === 0 ? (
+                <div style={{ color: '#666' }}>Nenhuma unidade encontrada.</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {lowestProgressUnits.map((unit) => (
+                    <div
+                      key={unit.id}
+                      style={{
+                        border: '1px solid #eee',
+                        borderRadius: 12,
+                        padding: 12,
+                        background: '#fafafa',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 900 }}>Unidade {unit.identifier || '-'}</div>
+                        <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+                          Status da unidade: <b>{statusLabel(unit.status)}</b>
+                        </div>
+                      </div>
 
-            {lowestProgressUnits.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhuma unidade encontrada.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 10 }}>
-                {lowestProgressUnits.map((unit) => (
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: 12, color: '#666' }}>Progresso</div>
+                        <div style={{ fontSize: 24, fontWeight: 900 }}>{Number(unit.progress || 0).toFixed(2)}%</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        ) : null}
+
+        {mode === REPORT_MODE.observations ? (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>
+                Filtros de observações e pendências
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
+                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
+                    <option value="">Todos</option>
+                    <option value="pending">Pendente</option>
+                    <option value="in_progress">Em andamento</option>
+                    <option value="done">Concluída</option>
+                  </select>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
+                  <input
+                    type="text"
+                    value={textFilter}
+                    onChange={(e) => setTextFilter(e.target.value)}
+                    placeholder="Buscar por unidade, etapa, observação..."
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+                  <input
+                    type="checkbox"
+                    checked={onlyWithObservation}
+                    onChange={(e) => setOnlyWithObservation(e.target.checked)}
+                  />
+                  Mostrar somente etapas com observação
+                </label>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
                   <div
-                    key={unit.id}
                     style={{
                       border: '1px solid #eee',
                       borderRadius: 12,
-                      padding: 12,
+                      padding: 10,
                       background: '#fafafa',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      flexWrap: 'wrap',
+                      maxHeight: 220,
+                      overflowY: 'auto',
+                      display: 'grid',
+                      gap: 8,
                     }}
                   >
-                    <div>
-                      <div style={{ fontSize: 15, fontWeight: 900 }}>Unidade {unit.identifier || '-'}</div>
-                      <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
-                        Status da unidade: <b>{statusLabel(unit.status)}</b>
-                      </div>
-                    </div>
-
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 12, color: '#666' }}>Progresso</div>
-                      <div style={{ fontSize: 24, fontWeight: 900 }}>{Number(unit.progress || 0).toFixed(2)}%</div>
-                    </div>
+                    {units.length === 0 ? (
+                      <div style={{ color: '#666', fontSize: 13 }}>Nenhuma unidade.</div>
+                    ) : (
+                      units.map((unit) => (
+                        <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                          <input
+                            type="checkbox"
+                            checked={unitFilter.includes(unit.id)}
+                            onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)}
+                          />
+                          Unidade {unit.identifier || '-'}
+                        </label>
+                      ))
+                    )}
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      ) : null}
+                </div>
 
-      {mode === REPORT_MODE.observations ? (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>
-              Filtros de observações e pendências
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
-                  <option value="">Todos</option>
-                  <option value="pending">Pendente</option>
-                  <option value="in_progress">Em andamento</option>
-                  <option value="done">Concluída</option>
-                </select>
-              </div>
-
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
-                <input
-                  type="text"
-                  value={textFilter}
-                  onChange={(e) => setTextFilter(e.target.value)}
-                  placeholder="Buscar por unidade, etapa, observação..."
-                  style={inputStyle}
-                />
-              </div>
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-                <input
-                  type="checkbox"
-                  checked={onlyWithObservation}
-                  onChange={(e) => setOnlyWithObservation(e.target.checked)}
-                />
-                Mostrar somente etapas com observação
-              </label>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
-                <div
-                  style={{
-                    border: '1px solid #eee',
-                    borderRadius: 12,
-                    padding: 10,
-                    background: '#fafafa',
-                    maxHeight: 220,
-                    overflowY: 'auto',
-                    display: 'grid',
-                    gap: 8,
-                  }}
-                >
-                  {units.length === 0 ? (
-                    <div style={{ color: '#666', fontSize: 13 }}>Nenhuma unidade.</div>
-                  ) : (
-                    units.map((unit) => (
-                      <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                        <input
-                          type="checkbox"
-                          checked={unitFilter.includes(unit.id)}
-                          onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)}
-                        />
-                        Unidade {unit.identifier || '-'}
-                      </label>
-                    ))
-                  )}
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por etapas</div>
+                  <div
+                    style={{
+                      border: '1px solid #eee',
+                      borderRadius: 12,
+                      padding: 10,
+                      background: '#fafafa',
+                      maxHeight: 220,
+                      overflowY: 'auto',
+                      display: 'grid',
+                      gap: 8,
+                    }}
+                  >
+                    {stages.length === 0 ? (
+                      <div style={{ color: '#666', fontSize: 13 }}>Nenhuma etapa.</div>
+                    ) : (
+                      stages.map((stage) => (
+                        <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                          <input
+                            type="checkbox"
+                            checked={stageFilter.includes(stage.id)}
+                            onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)}
+                          />
+                          {stage.name || '-'}
+                        </label>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por etapas</div>
-                <div
-                  style={{
-                    border: '1px solid #eee',
-                    borderRadius: 12,
-                    padding: 10,
-                    background: '#fafafa',
-                    maxHeight: 220,
-                    overflowY: 'auto',
-                    display: 'grid',
-                    gap: 8,
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('')
+                    setUnitFilter([])
+                    setStageFilter([])
+                    setTextFilter('')
+                    setOnlyWithObservation(true)
+                    setStartDate(today)
+                    setEndDate(today)
                   }}
+                  style={softButtonStyle}
                 >
-                  {stages.length === 0 ? (
-                    <div style={{ color: '#666', fontSize: 13 }}>Nenhuma etapa.</div>
-                  ) : (
-                    stages.map((stage) => (
-                      <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                        <input
-                          type="checkbox"
-                          checked={stageFilter.includes(stage.id)}
-                          onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)}
-                        />
-                        {stage.name || '-'}
-                      </label>
-                    ))
-                  )}
+                  Limpar filtros
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Pendentes</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Em andamento</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Concluídas</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div>
+              </div>
+              <div style={cardStyle}>
+                <div style={{ fontSize: 12, color: '#666' }}>Com observação</div>
+                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div>
+              </div>
+            </div>
+
+            <div style={cardStyle}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
+                Observações e pendências
+              </div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
+                Relatório filtrável por status, unidade, etapa, período e texto.
+              </div>
+
+              {filteredObservationRows.length === 0 ? (
+                <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
+                        <th style={{ padding: '10px 8px' }}>Unidade</th>
+                        <th style={{ padding: '10px 8px' }}>Etapa</th>
+                        <th style={{ padding: '10px 8px' }}>Status</th>
+                        <th style={{ padding: '10px 8px' }}>Observação</th>
+                        <th style={{ padding: '10px 8px' }}>Última atualização</th>
+                        <th style={{ padding: '10px 8px' }}>Abrir</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredObservationRows.map((row) => {
+                        const relatedLogs = logs
+                          .filter((log) => {
+                            const metadata = parseMaybeJson(log?.metadata)
+                            const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
+                            return unitStageId === row.id
+                          })
+                          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+
+                        const latestLog = relatedLogs[0] || null
+
+                        return (
+                          <tr key={row.id} style={{ borderBottom: '1px solid #f1f1f1', verticalAlign: 'top' }}>
+                            <td style={{ padding: '10px 8px', fontWeight: 700 }}>
+                              {row.unit?.identifier || '-'}
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>{row.stage_display_name}</td>
+                            <td style={{ padding: '10px 8px' }}>{statusLabel(row.status)}</td>
+                            <td style={{ padding: '10px 8px', maxWidth: 420 }}>
+                              {safeStr(row.notes).trim() || <span style={{ color: '#999' }}>Sem observação</span>}
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>
+                              {latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-'}
+                            </td>
+                            <td style={{ padding: '10px 8px' }}>
+                              <Link href={`/unidades/${row.unit_id}`} style={{ textDecoration: 'none' }}>
+                                Abrir unidade
+                              </Link>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-              </div>
+              )}
             </div>
-
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setStatusFilter('')
-                  setUnitFilter([])
-                  setStageFilter([])
-                  setTextFilter('')
-                  setOnlyWithObservation(true)
-                  setStartDate(today)
-                  setEndDate(today)
-                }}
-                style={softButtonStyle}
-              >
-                Limpar filtros
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Pendentes</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Em andamento</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Concluídas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Com observação</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div>
-            </div>
-          </div>
-
-          <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Observações e pendências
-            </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Relatório filtrável por status, unidade, etapa, período e texto.
-            </div>
-
-            {filteredObservationRows.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
-                      <th style={{ padding: '10px 8px' }}>Unidade</th>
-                      <th style={{ padding: '10px 8px' }}>Etapa</th>
-                      <th style={{ padding: '10px 8px' }}>Status</th>
-                      <th style={{ padding: '10px 8px' }}>Observação</th>
-                      <th style={{ padding: '10px 8px' }}>Última atualização</th>
-                      <th style={{ padding: '10px 8px' }}>Abrir</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredObservationRows.map((row) => {
-                      const relatedLogs = logs
-                        .filter((log) => {
-                          const metadata = parseMaybeJson(log?.metadata)
-                          const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
-                          return unitStageId === row.id
-                        })
-                        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-
-                      const latestLog = relatedLogs[0] || null
-
-                      return (
-                        <tr key={row.id} style={{ borderBottom: '1px solid #f1f1f1', verticalAlign: 'top' }}>
-                          <td style={{ padding: '10px 8px', fontWeight: 700 }}>
-                            {row.unit?.identifier || '-'}
-                          </td>
-                          <td style={{ padding: '10px 8px' }}>{row.stage_display_name}</td>
-                          <td style={{ padding: '10px 8px' }}>{statusLabel(row.status)}</td>
-                          <td style={{ padding: '10px 8px', maxWidth: 420 }}>
-                            {safeStr(row.notes).trim() || <span style={{ color: '#999' }}>Sem observação</span>}
-                          </td>
-                          <td style={{ padding: '10px 8px' }}>
-                            {latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-'}
-                          </td>
-                          <td style={{ padding: '10px 8px' }}>
-                            <Link href={`/unidades/${row.unit_id}`} style={{ textDecoration: 'none' }}>
-                              Abrir unidade
-                            </Link>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </>
-      ) : null}
+          </>
+        ) : null}
+      </div>
     </div>
   )
 }
