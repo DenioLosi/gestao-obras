@@ -133,6 +133,9 @@ export default function ObraDetalhePage() {
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
 
+  // ✅ NOVO: etapas por unidade para métricas do card
+  const [unitStagesByUnitId, setUnitStagesByUnitId] = useState({})
+
   // Etapas (modelo)
   const [stageTemplates, setStageTemplates] = useState([])
   const [stagesOpen, setStagesOpen] = useState(false)
@@ -186,6 +189,7 @@ export default function ObraDetalhePage() {
       setProject(null)
       setUnits([])
       setStageTemplates([])
+      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
@@ -217,11 +221,40 @@ export default function ObraDetalhePage() {
     if (uErr) {
       alert(`Erro ao carregar unidades: ${uErr.message}`)
       setUnits([])
+      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
 
-    setUnits(Array.isArray(uRows) ? uRows : [])
+    const unitList = Array.isArray(uRows) ? uRows : []
+    setUnits(unitList)
+
+    // ✅ NOVO: carregar etapas das unidades para métricas dos cards
+    const unitIds = unitList.map((x) => x.id).filter(Boolean)
+    if (unitIds.length > 0) {
+      const { data: unitStages, error: usErr } = await supabase
+        .from('unit_stages')
+        .select('id, unit_id, status, is_active')
+        .in('unit_id', unitIds)
+        .limit(1000000)
+
+      if (usErr) {
+        console.error('Erro ao carregar etapas das unidades:', usErr)
+        alert(`Erro ao carregar etapas das unidades: ${usErr.message}`)
+        setUnitStagesByUnitId({})
+      } else {
+        const grouped = {}
+        for (const row of unitStages || []) {
+          const key = safeStr(row.unit_id)
+          if (!grouped[key]) grouped[key] = []
+          grouped[key].push(row)
+        }
+        setUnitStagesByUnitId(grouped)
+      }
+    } else {
+      setUnitStagesByUnitId({})
+    }
+
     setLoading(false)
   }
 
@@ -271,6 +304,39 @@ export default function ObraDetalhePage() {
 
     return list
   }, [units, search, statusFilter, sortBy])
+
+  function getUnitStageMetrics(unitId, unitProgress, unitStatus) {
+    const rows = unitStagesByUnitId[safeStr(unitId)] || []
+    const activeRows = rows.filter((r) => r.is_active !== false)
+
+    const totalStages = activeRows.length
+    const doneStages = activeRows.filter((r) => safeStr(r.status) === 'done').length
+    const pendingStages = activeRows.filter((r) => safeStr(r.status || 'pending') === 'pending').length
+    const inProgressStages = activeRows.filter((r) => safeStr(r.status) === 'in_progress').length
+
+    let progressPct = 0
+    if (totalStages > 0) {
+      progressPct = (doneStages / totalStages) * 100
+    } else {
+      progressPct = clampPct(unitProgress || 0)
+    }
+
+    let generalStatus = unitStatus || 'pending'
+    if (totalStages > 0) {
+      if (doneStages === totalStages) generalStatus = 'done'
+      else if (doneStages > 0 || inProgressStages > 0) generalStatus = 'in_progress'
+      else generalStatus = 'pending'
+    }
+
+    return {
+      totalStages,
+      doneStages,
+      pendingStages,
+      inProgressStages,
+      progressPct,
+      generalStatus,
+    }
+  }
 
   async function deleteUnit(unitId, identifier) {
     const ok = window.confirm(`Excluir unidade ${identifier || ''}?`)
@@ -881,7 +947,9 @@ export default function ObraDetalhePage() {
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
         ) : (
           filteredUnits.map((u) => {
-            const st = u.status || 'pending'
+            const metrics = getUnitStageMetrics(u.id, u.progress, u.status)
+            const pctUnit = Math.round(metrics.progressPct)
+
             return (
               <div
                 key={u.id}
@@ -892,10 +960,10 @@ export default function ObraDetalhePage() {
                   padding: 14,
                   boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
                   display: 'grid',
-                  gap: 10,
+                  gap: 12,
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
                     <div style={{ fontSize: 20, fontWeight: 900 }}>Unidade {u.identifier || u.id}</div>
                     <span
@@ -910,15 +978,11 @@ export default function ObraDetalhePage() {
                       }}
                       title="Status"
                     >
-                      {STATUS_PT[st] || '—'}
+                      {STATUS_PT[metrics.generalStatus] || '—'}
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <div style={{ fontSize: 12, color: '#444' }}>
-                      Progresso: <b>{formatPct(u.progress || 0)}</b>
-                    </div>
-
                     <Link href={`/unidades/${u.id}`} style={{ textDecoration: 'none' }}>
                       <button
                         style={{
@@ -950,6 +1014,46 @@ export default function ObraDetalhePage() {
                     >
                       Excluir
                     </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', fontSize: 13, color: '#444' }}>
+                    <span>
+                      Etapas: <b>{metrics.doneStages}/{metrics.totalStages}</b>
+                    </span>
+
+                    <span>
+                      Pendências: <b>{metrics.pendingStages}</b>
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
+                      <span>Progresso</span>
+                      <b>{formatPct(metrics.progressPct)}</b>
+                    </div>
+
+                    <div style={{ height: 10, background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
+                      <div style={{ width: `${pctUnit}%`, height: '100%', background: '#111', opacity: 0.18 }} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(100px, 1fr))', gap: 10 }}>
+                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>pendentes</div>
+                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.pendingStages}</div>
+                    </div>
+
+                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>em andamento</div>
+                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.inProgressStages}</div>
+                    </div>
+
+                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+                      <div style={{ fontSize: 12, color: '#666' }}>concluídas</div>
+                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.doneStages}</div>
+                    </div>
                   </div>
                 </div>
               </div>
