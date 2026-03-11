@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../../lib/supabase'
-import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 
 const REPORT_MODE = {
@@ -139,7 +138,6 @@ function durationLabel(startValue, endValue) {
 
   if (totalDays >= 1) return `${totalDays} dia${totalDays > 1 ? 's' : ''}`
   if (totalHours >= 1) return `${totalHours} hora${totalHours > 1 ? 's' : ''}`
-
   const totalMinutes = Math.max(1, Math.floor(diffMs / (1000 * 60)))
   return `${totalMinutes} minuto${totalMinutes > 1 ? 's' : ''}`
 }
@@ -175,8 +173,6 @@ function loadImageAsDataUrl(url) {
 export default function ObraRelatoriosPage() {
   const router = useRouter()
   const { id } = router.query
-  const reportRef = useRef(null)
-
   const projectId = useMemo(() => {
     if (!id) return null
     if (Array.isArray(id)) return id[0] || null
@@ -221,7 +217,6 @@ export default function ObraRelatoriosPage() {
     if (!projectId) return
 
     setLoading(true)
-
     const currentUser = await ensureAuth()
     if (!currentUser) return
 
@@ -252,60 +247,22 @@ export default function ObraRelatoriosPage() {
     setProject(projectRow)
 
     const [unitsRes, stagesRes, unitStagesRes, photosRes, logsRes] = await Promise.all([
-      supabase
-        .from('units')
-        .select('id, project_id, identifier, status, progress, is_active')
-        .eq('project_id', projectId)
-        .order('identifier', { ascending: true }),
-
-      supabase
-        .from('stages')
-        .select('id, project_id, name, order_index, is_active')
-        .eq('project_id', projectId)
-        .order('order_index', { ascending: true }),
-
-      supabase
-        .from('unit_stages')
-        .select('id, unit_id, stage_id, status, notes, custom_name, order_index, is_active')
-        .order('order_index', { ascending: true }),
-
-      supabase
-        .from('unit_stage_photos')
-        .select('id, unit_stage_id, user_id, kind, path, caption, created_at')
-        .order('created_at', { ascending: false }),
-
-      supabase
-        .from('unit_stage_logs')
-        .select('id, unit_stage_id, user_id, action, old_value, new_value, created_at')
-        .order('created_at', { ascending: false }),
+      supabase.from('units').select('id, project_id, identifier, status, progress, is_active').eq('project_id', projectId).order('identifier', { ascending: true }),
+      supabase.from('stages').select('id, project_id, name, order_index, is_active').eq('project_id', projectId).order('order_index', { ascending: true }),
+      supabase.from('unit_stages').select('id, unit_id, stage_id, status, notes, custom_name, order_index, is_active').order('order_index', { ascending: true }),
+      supabase.from('unit_stage_photos').select('id, unit_stage_id, user_id, kind, path, caption, created_at').order('created_at', { ascending: false }),
+      supabase.from('unit_stage_logs').select('id, unit_stage_id, user_id, action, old_value, new_value, created_at').order('created_at', { ascending: false }),
     ])
 
-    if (unitsRes.error) {
-      alert(`Erro ao carregar unidades: ${unitsRes.error.message}`)
-      setLoading(false)
-      return
-    }
-
-    if (stagesRes.error) {
-      alert(`Erro ao carregar etapas: ${stagesRes.error.message}`)
-      setLoading(false)
-      return
-    }
-
-    if (unitStagesRes.error) {
-      alert(`Erro ao carregar etapas das unidades: ${unitStagesRes.error.message}`)
-      setLoading(false)
-      return
-    }
-
-    if (photosRes.error) {
-      alert(`Erro ao carregar fotos: ${photosRes.error.message}`)
-      setLoading(false)
-      return
-    }
-
-    if (logsRes.error) {
-      alert(`Erro ao carregar histórico: ${logsRes.error.message}`)
+    if (unitsRes.error || stagesRes.error || unitStagesRes.error || photosRes.error || logsRes.error) {
+      alert(
+        unitsRes.error?.message ||
+          stagesRes.error?.message ||
+          unitStagesRes.error?.message ||
+          photosRes.error?.message ||
+          logsRes.error?.message ||
+          'Erro ao carregar dados'
+      )
       setLoading(false)
       return
     }
@@ -318,28 +275,17 @@ export default function ObraRelatoriosPage() {
 
     const unitIds = new Set(unitsRows.map((u) => u.id))
     const stageIds = new Set(stagesRows.map((s) => s.id))
-
-    const unitStagesRows = unitStagesRowsRaw.filter(
-      (row) => unitIds.has(row.unit_id) && stageIds.has(row.stage_id)
-    )
-
+    const unitStagesRows = unitStagesRowsRaw.filter((row) => unitIds.has(row.unit_id) && stageIds.has(row.stage_id))
     const unitStageIds = new Set(unitStagesRows.map((row) => row.id))
-
     const photosRows = photosRowsRaw.filter((row) => unitStageIds.has(row.unit_stage_id))
     const logsRows = logsRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
 
-    const userIds = Array.from(
-      new Set([...photosRows.map((x) => x.user_id), ...logsRows.map((x) => x.user_id)].filter(Boolean))
-    )
-
+    const userIds = Array.from(new Set([...photosRows.map((x) => x.user_id), ...logsRows.map((x) => x.user_id)].filter(Boolean)))
     let nextProfilesMap = {}
-    if (userIds.length > 0) {
-      const { data: profileRows, error: profilesErr } = await supabase
-        .from('profiles')
-        .select('id, full_name, email')
-        .in('id', userIds)
 
-      if (!profilesErr && Array.isArray(profileRows)) {
+    if (userIds.length > 0) {
+      const { data: profileRows } = await supabase.from('profiles').select('id, full_name, email').in('id', userIds)
+      if (Array.isArray(profileRows)) {
         nextProfilesMap = profileRows.reduce((acc, row) => {
           acc[row.id] = row
           return acc
@@ -361,29 +307,9 @@ export default function ObraRelatoriosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
-  const unitsById = useMemo(() => {
-    const map = {}
-    units.forEach((u) => {
-      map[u.id] = u
-    })
-    return map
-  }, [units])
-
-  const stagesById = useMemo(() => {
-    const map = {}
-    stages.forEach((s) => {
-      map[s.id] = s
-    })
-    return map
-  }, [stages])
-
-  const unitStagesById = useMemo(() => {
-    const map = {}
-    unitStages.forEach((row) => {
-      map[row.id] = row
-    })
-    return map
-  }, [unitStages])
+  const unitsById = useMemo(() => Object.fromEntries(units.map((u) => [u.id, u])), [units])
+  const stagesById = useMemo(() => Object.fromEntries(stages.map((s) => [s.id, s])), [stages])
+  const unitStagesById = useMemo(() => Object.fromEntries(unitStages.map((u) => [u.id, u])), [unitStages])
 
   const enrichedUnitStages = useMemo(() => {
     return unitStages.map((row) => {
@@ -398,19 +324,8 @@ export default function ObraRelatoriosPage() {
     })
   }, [unitStages, unitsById, stagesById])
 
-  const diaryRange = useMemo(() => {
-    return {
-      from: startOfDayIso(diaryDate),
-      to: endOfDayIso(diaryDate),
-    }
-  }, [diaryDate])
-
-  const periodRange = useMemo(() => {
-    return {
-      from: startOfDayIso(startDate),
-      to: endOfDayIso(endDate),
-    }
-  }, [startDate, endDate])
+  const diaryRange = useMemo(() => ({ from: startOfDayIso(diaryDate), to: endOfDayIso(diaryDate) }), [diaryDate])
+  const periodRange = useMemo(() => ({ from: startOfDayIso(startDate), to: endOfDayIso(endDate) }), [startDate, endDate])
 
   function inRange(dateValue, from, to) {
     if (!dateValue || !from || !to) return false
@@ -421,21 +336,10 @@ export default function ObraRelatoriosPage() {
     return d >= a && d <= b
   }
 
-  const diaryLogs = useMemo(() => {
-    return logs.filter((row) => inRange(row.created_at, diaryRange.from, diaryRange.to))
-  }, [logs, diaryRange])
-
-  const diaryPhotos = useMemo(() => {
-    return photos.filter((row) => inRange(row.created_at, diaryRange.from, diaryRange.to))
-  }, [photos, diaryRange])
-
-  const periodLogs = useMemo(() => {
-    return logs.filter((row) => inRange(row.created_at, periodRange.from, periodRange.to))
-  }, [logs, periodRange])
-
-  const periodPhotos = useMemo(() => {
-    return photos.filter((row) => inRange(row.created_at, periodRange.from, periodRange.to))
-  }, [photos, periodRange])
+  const diaryLogs = useMemo(() => logs.filter((row) => inRange(row.created_at, diaryRange.from, diaryRange.to)), [logs, diaryRange])
+  const diaryPhotos = useMemo(() => photos.filter((row) => inRange(row.created_at, diaryRange.from, diaryRange.to)), [photos, diaryRange])
+  const periodLogs = useMemo(() => logs.filter((row) => inRange(row.created_at, periodRange.from, periodRange.to)), [logs, periodRange])
+  const periodPhotos = useMemo(() => photos.filter((row) => inRange(row.created_at, periodRange.from, periodRange.to)), [photos, periodRange])
 
   const stageTimelineByUnitStageId = useMemo(() => {
     const map = {}
@@ -444,31 +348,16 @@ export default function ObraRelatoriosPage() {
     sortedLogs.forEach((log) => {
       const unitStageId = log.unit_stage_id
       if (!unitStageId) return
-
-      if (!map[unitStageId]) {
-        map[unitStageId] = {
-          started_at: null,
-          finished_at: null,
-        }
-      }
+      if (!map[unitStageId]) map[unitStageId] = { started_at: null, finished_at: null }
 
       if (log.action === 'status_changed') {
         const fromStatus = oldStatusFromLog(log)
         const toStatus = newStatusFromLog(log)
-
-        if (!map[unitStageId].started_at) {
-          if (
-            (fromStatus === 'pending' && toStatus === 'in_progress') ||
-            (fromStatus === 'pending' && toStatus === 'done')
-          ) {
-            map[unitStageId].started_at = log.created_at
-          }
+        if (!map[unitStageId].started_at && ((fromStatus === 'pending' && toStatus === 'in_progress') || (fromStatus === 'pending' && toStatus === 'done'))) {
+          map[unitStageId].started_at = log.created_at
         }
-
-        if (!map[unitStageId].finished_at) {
-          if (toStatus === 'done') {
-            map[unitStageId].finished_at = log.created_at
-          }
+        if (!map[unitStageId].finished_at && toStatus === 'done') {
+          map[unitStageId].finished_at = log.created_at
         }
       }
     })
@@ -476,7 +365,7 @@ export default function ObraRelatoriosPage() {
     return map
   }, [logs])
 
-  function buildBlocks(logRows, photoRows) {
+  function makeBlocks(logRows, photoRows) {
     const relevantActions = new Set(['status_changed', 'notes_updated'])
     const blockMap = {}
 
@@ -504,7 +393,6 @@ export default function ObraRelatoriosPage() {
           events: [],
         }
       }
-
       return blockMap[unitStageId]
     }
 
@@ -526,31 +414,22 @@ export default function ObraRelatoriosPage() {
         type: 'log',
         created_at: log.created_at,
         text: description,
-        user_name:
-          safeStr(profilesMap[log.user_id]?.full_name).trim() ||
-          safeStr(profilesMap[log.user_id]?.email).trim() ||
-          '',
+        user_name: safeStr(profilesMap[log.user_id]?.full_name).trim() || safeStr(profilesMap[log.user_id]?.email).trim() || '',
       })
     })
 
     photoRows.forEach((photo) => {
       const block = ensureBlock(photo.unit_stage_id)
       if (!block) return
-      const userName =
-        safeStr(profilesMap[photo.user_id]?.full_name).trim() ||
-        safeStr(profilesMap[photo.user_id]?.email).trim() ||
-        ''
-
       block.photos.push({
         ...photo,
-        user_name: userName,
+        user_name: safeStr(profilesMap[photo.user_id]?.full_name).trim() || safeStr(profilesMap[photo.user_id]?.email).trim() || '',
       })
-
       block.events.push({
         type: 'photo',
         created_at: photo.created_at,
         text: getPhotoKindLabel(photo.kind),
-        user_name: userName,
+        user_name: safeStr(profilesMap[photo.user_id]?.full_name).trim() || safeStr(profilesMap[photo.user_id]?.email).trim() || '',
       })
     })
 
@@ -560,15 +439,23 @@ export default function ObraRelatoriosPage() {
         events: block.events.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
         photos: block.photos.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
       }))
-      .sort((a, b) => {
-        const unitCmp = safeStr(a.unit?.identifier).localeCompare(safeStr(b.unit?.identifier), 'pt-BR')
-        if (unitCmp !== 0) return unitCmp
-        return safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')
-      })
   }
 
-  const diaryBlocks = useMemo(() => buildBlocks(diaryLogs, diaryPhotos), [diaryLogs, diaryPhotos, profilesMap, unitsById, stagesById, unitStagesById, stageTimelineByUnitStageId])
-  const periodBlocks = useMemo(() => buildBlocks(periodLogs, periodPhotos), [periodLogs, periodPhotos, profilesMap, unitsById, stagesById, unitStagesById, stageTimelineByUnitStageId])
+  const diaryBlocks = useMemo(() => {
+    return makeBlocks(diaryLogs, diaryPhotos).sort((a, b) => {
+      const unitCmp = safeStr(a.unit?.identifier).localeCompare(safeStr(b.unit?.identifier), 'pt-BR')
+      if (unitCmp !== 0) return unitCmp
+      return safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')
+    })
+  }, [diaryLogs, diaryPhotos, unitStagesById, unitsById, stagesById, stageTimelineByUnitStageId, profilesMap])
+
+  const periodBlocks = useMemo(() => {
+    return makeBlocks(periodLogs, periodPhotos).sort((a, b) => {
+      const firstA = a.events[0]?.created_at || a.photos[0]?.created_at || ''
+      const firstB = b.events[0]?.created_at || b.photos[0]?.created_at || ''
+      return new Date(firstA) - new Date(firstB)
+    })
+  }, [periodLogs, periodPhotos, unitStagesById, unitsById, stagesById, stageTimelineByUnitStageId, profilesMap])
 
   const diarySummary = useMemo(() => {
     const unitIds = new Set()
@@ -578,7 +465,6 @@ export default function ObraRelatoriosPage() {
 
     diaryBlocks.forEach((block) => {
       if (block.unit?.id) unitIds.add(block.unit.id)
-
       block.events.forEach((event) => {
         const text = safeStr(event.text).toLowerCase()
         if (text.includes('etapa iniciada')) started += 1
@@ -599,34 +485,44 @@ export default function ObraRelatoriosPage() {
 
   const periodSummary = useMemo(() => {
     const unitIds = new Set()
-    let started = 0
-    let finished = 0
-    let observations = 0
+    const stageCounters = {}
 
-    periodBlocks.forEach((block) => {
-      if (block.unit?.id) unitIds.add(block.unit.id)
-      block.events.forEach((event) => {
-        const text = safeStr(event.text).toLowerCase()
-        if (text.includes('etapa iniciada')) started += 1
-        if (text.includes('etapa concluída')) finished += 1
-        if (text.includes('observação')) observations += 1
-      })
+    periodLogs.forEach((log) => {
+      const us = unitStagesById[log.unit_stage_id]
+      if (!us) return
+      if (us.unit_id) unitIds.add(us.unit_id)
+
+      const stage = stagesById[us.stage_id]
+      const stageName = safeStr(us.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa'
+      const key = `${us.stage_id}__${stageName}`
+
+      if (!stageCounters[key]) stageCounters[key] = { stage_name: stageName, started: 0, finished: 0, observations: 0 }
+
+      if (log.action === 'status_changed') {
+        const fromStatus = oldStatusFromLog(log)
+        const toStatus = newStatusFromLog(log)
+        if (fromStatus === 'pending' && toStatus === 'in_progress') stageCounters[key].started += 1
+        if (toStatus === 'done') stageCounters[key].finished += 1
+      }
+
+      if (log.action === 'notes_updated') stageCounters[key].observations += 1
+    })
+
+    periodPhotos.forEach((photo) => {
+      const us = unitStagesById[photo.unit_stage_id]
+      if (us?.unit_id) unitIds.add(us.unit_id)
     })
 
     return {
       moved_units: unitIds.size,
       total_logs: periodLogs.length,
       total_photos: periodPhotos.length,
-      started,
-      finished,
-      observations,
+      stages: Object.values(stageCounters).sort((a, b) => safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')),
     }
-  }, [periodBlocks, periodLogs.length, periodPhotos.length])
+  }, [periodLogs, periodPhotos, unitStagesById, stagesById])
 
   const lowestProgressUnits = useMemo(() => {
-    return [...units]
-      .sort((a, b) => Number(a.progress || 0) - Number(b.progress || 0))
-      .slice(0, 10)
+    return [...units].sort((a, b) => Number(a.progress || 0) - Number(b.progress || 0)).slice(0, 10)
   }, [units])
 
   const filteredObservationRows = useMemo(() => {
@@ -639,34 +535,10 @@ export default function ObraRelatoriosPage() {
         if (statusFilter && normalizeStatus(row.status) !== normalizeStatus(statusFilter)) return false
         if (unitFilterSet.size > 0 && !unitFilterSet.has(row.unit_id)) return false
         if (stageFilterSet.size > 0 && !stageFilterSet.has(row.stage_id)) return false
-
-        const note = safeStr(row.notes).trim()
-        if (onlyWithObservation && !note) return false
-
-        if (startDate || endDate) {
-          const relatedLogs = logs.filter((log) => {
-            return log.unit_stage_id === row.id && inRange(log.created_at, periodRange.from, periodRange.to)
-          })
-
-          const relatedPhotos = photos.filter((photo) => {
-            return photo.unit_stage_id === row.id && inRange(photo.created_at, periodRange.from, periodRange.to)
-          })
-
-          if (startDate && endDate && relatedLogs.length === 0 && relatedPhotos.length === 0) {
-            return false
-          }
-        }
+        if (onlyWithObservation && !safeStr(row.notes).trim()) return false
 
         if (text) {
-          const joined = [
-            safeStr(row.unit?.identifier),
-            safeStr(row.stage_display_name),
-            safeStr(row.notes),
-            safeStr(row.status),
-          ]
-            .join(' ')
-            .toLowerCase()
-
+          const joined = [safeStr(row.unit?.identifier), safeStr(row.stage_display_name), safeStr(row.notes), safeStr(row.status)].join(' ').toLowerCase()
           if (!joined.includes(text)) return false
         }
 
@@ -677,29 +549,10 @@ export default function ObraRelatoriosPage() {
         if (unitCmp !== 0) return unitCmp
         return Number(a.order_index || 0) - Number(b.order_index || 0)
       })
-  }, [
-    enrichedUnitStages,
-    statusFilter,
-    unitFilter,
-    stageFilter,
-    textFilter,
-    onlyWithObservation,
-    logs,
-    photos,
-    periodRange,
-    startDate,
-    endDate,
-  ])
+  }, [enrichedUnitStages, statusFilter, unitFilter, stageFilter, textFilter, onlyWithObservation])
 
   const observationSummary = useMemo(() => {
-    const counts = {
-      total: filteredObservationRows.length,
-      pending: 0,
-      in_progress: 0,
-      done: 0,
-      with_notes: 0,
-    }
-
+    const counts = { total: filteredObservationRows.length, pending: 0, in_progress: 0, done: 0, with_notes: 0 }
     filteredObservationRows.forEach((row) => {
       const s = normalizeStatus(row.status)
       if (s === 'pending') counts.pending += 1
@@ -707,19 +560,11 @@ export default function ObraRelatoriosPage() {
       if (s === 'done') counts.done += 1
       if (safeStr(row.notes).trim()) counts.with_notes += 1
     })
-
     return counts
   }, [filteredObservationRows])
 
   const projectSummary = useMemo(() => {
-    const counts = {
-      total_units: units.length,
-      pending: 0,
-      in_progress: 0,
-      done: 0,
-      avg_progress: 0,
-    }
-
+    const counts = { total_units: units.length, pending: 0, in_progress: 0, done: 0, avg_progress: 0 }
     let progressSum = 0
     units.forEach((unit) => {
       const status = normalizeStatus(unit.status)
@@ -728,18 +573,14 @@ export default function ObraRelatoriosPage() {
       if (status === 'done') counts.done += 1
       progressSum += Number(unit.progress || 0)
     })
-
     counts.avg_progress = units.length > 0 ? progressSum / units.length : 0
     return counts
   }, [units])
 
   function toggleMultiValue(setter, currentValues, value) {
     if (!value) return
-    if (currentValues.includes(value)) {
-      setter(currentValues.filter((v) => v !== value))
-    } else {
-      setter([...currentValues, value])
-    }
+    if (currentValues.includes(value)) setter(currentValues.filter((v) => v !== value))
+    else setter([...currentValues, value])
   }
 
   async function rerun() {
@@ -751,7 +592,7 @@ export default function ObraRelatoriosPage() {
     }
   }
 
-  async function createPdfHelper() {
+  async function createBasePdf(title, subtitle) {
     const pdf = new jsPDF('p', 'mm', 'a4')
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
@@ -760,9 +601,7 @@ export default function ObraRelatoriosPage() {
     let y = margin
 
     let logoDataUrl = null
-    if (REPORT_LOGO_URL) {
-      logoDataUrl = await loadImageAsDataUrl(REPORT_LOGO_URL)
-    }
+    if (REPORT_LOGO_URL) logoDataUrl = await loadImageAsDataUrl(REPORT_LOGO_URL)
 
     function addPageIfNeeded(extra = 10) {
       if (y + extra > pageHeight - margin) {
@@ -771,7 +610,7 @@ export default function ObraRelatoriosPage() {
       }
     }
 
-    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 7) {
+    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 7.2) {
       const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
       pdf.text(lines, x, topY, { baseline: 'top' })
       return lines.length * lineHeight
@@ -789,19 +628,17 @@ export default function ObraRelatoriosPage() {
     }
 
     function labelValue(label, value) {
-      addPageIfNeeded(11)
+      addPageIfNeeded(12)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(`${label}:`, margin, y)
-
       pdf.setFont('helvetica', 'normal')
-      const used = drawWrappedText(safeStr(value) || '-', margin + 32, y - 1, contentWidth - 32, 7)
-      y += Math.max(8, used + 1.5)
+      const used = drawWrappedText(safeStr(value) || '-', margin + 34, y - 1, contentWidth - 34, 7.2)
+      y += Math.max(8, used + 2)
     }
 
     let summaryCardIndex = 0
-
-    function resetSummaryCardIndex() {
+    function resetSummaryCards() {
       summaryCardIndex = 0
     }
 
@@ -810,30 +647,22 @@ export default function ObraRelatoriosPage() {
       const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
       const cardY = y
       const cardHeight = 30
-
       pdf.setDrawColor(220)
       pdf.rect(x, cardY, cardWidth, cardHeight)
-
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(9)
       const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
       pdf.text(labelLines, x + 3, cardY + 5, { baseline: 'top' })
-
-      const labelHeight = labelLines.length * 5
-
+      const labelHeight = labelLines.length * 5.2
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(13)
       pdf.text(safeStr(value), x + 3, cardY + 10 + labelHeight)
-
       summaryCardIndex += 1
-      if (summaryCardIndex % 2 === 0) {
-        y += cardHeight + 8
-      }
+      if (summaryCardIndex % 2 === 0) y += cardHeight + 8
     }
 
     async function addPhotoBlock(photo) {
-      addPageIfNeeded(76)
-
+      addPageIfNeeded(78)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(getPhotoKindLabel(photo.kind), margin, y)
@@ -846,261 +675,177 @@ export default function ObraRelatoriosPage() {
       }
 
       const imageDataUrl = signedUrl ? await loadImageAsDataUrl(signedUrl) : null
-
       if (imageDataUrl) {
-        addPageIfNeeded(70)
-
-        const imgX = margin
-        const imgY = y
-        const imgWidth = Math.min(95, contentWidth)
-        const imgHeight = 62
-
+        addPageIfNeeded(72)
         try {
-          pdf.addImage(imageDataUrl, 'JPEG', imgX, imgY, imgWidth, imgHeight)
-          y += imgHeight + 6
+          pdf.addImage(imageDataUrl, 'JPEG', margin, y, Math.min(95, contentWidth), 62)
+          y += 68
         } catch {
           pdf.setFont('helvetica', 'italic')
           pdf.setFontSize(10)
           pdf.text('Não foi possível carregar a imagem no PDF.', margin, y)
-          y += 7
+          y += 8
         }
       } else {
         pdf.setFont('helvetica', 'italic')
         pdf.setFontSize(10)
         pdf.text('Imagem não disponível para este registro.', margin, y)
-        y += 7
+        y += 8
       }
 
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(10)
-
-      y += drawWrappedText(
-        `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
-        margin,
-        y,
-        contentWidth,
-        7
-      ) + 1.5
-
-      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 7) + 1.5
-
-      if (safeStr(photo.caption).trim()) {
-        y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 7) + 1.5
-      }
-
+      y += drawWrappedText(`Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`, margin, y, contentWidth, 7.2) + 1
+      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 7.2) + 1
+      if (safeStr(photo.caption).trim()) y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 7.2) + 1
       y += 5
     }
 
-    async function addBlock(block) {
-      addPageIfNeeded(38)
-
+    async function addBlock(block, options = {}) {
+      addPageIfNeeded(40)
       pdf.setFillColor(245, 245, 245)
-      pdf.rect(margin, y, contentWidth, 10, 'F')
+      pdf.rect(margin, y, contentWidth, 9, 'F')
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(12)
-      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, y + 6.5)
-      y += 15
+      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, y + 6)
+      y += 14
 
       labelValue('Etapa', block.stage_name)
       labelValue('Status atual', statusLabel(block.status))
-
       if (block.started_at) labelValue('Início', formatDateTime(block.started_at))
       if (block.finished_at) labelValue('Conclusão', formatDateTime(block.finished_at))
-      if (block.started_at && block.finished_at) {
-        labelValue('Duração', durationLabel(block.started_at, block.finished_at))
-      }
+      if (block.started_at && block.finished_at) labelValue('Duração', durationLabel(block.started_at, block.finished_at))
 
-      const relevantEvents = block.events.filter((event) => safeStr(event.text).trim())
-
+      const relevantEvents = Array.isArray(block.events) ? block.events.filter((event) => safeStr(event.text).trim()) : []
       if (relevantEvents.length > 0) {
-        addPageIfNeeded(13)
+        addPageIfNeeded(14)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
-        pdf.text('Atividades registradas', margin, y)
+        pdf.text(options.eventsTitle || 'Atividades registradas', margin, y)
         y += 8
-
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
-
         relevantEvents.forEach((event) => {
           addPageIfNeeded(10)
           const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 7) + 1.5
+          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 7.2) + 1
         })
-
         y += 2
       }
 
       if (safeStr(block.notes).trim()) {
-        addPageIfNeeded(15)
+        addPageIfNeeded(16)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
         pdf.text('Observação da etapa', margin, y)
         y += 8
-
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
-        y += drawWrappedText(block.notes, margin, y, contentWidth, 7) + 1.5
-        y += 2
+        y += drawWrappedText(block.notes, margin, y, contentWidth, 7.2) + 2
       }
 
-      if (block.photos.length > 0) {
+      if (Array.isArray(block.photos) && block.photos.length > 0) {
         addPageIfNeeded(14)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
-        pdf.text('Fotos registradas', margin, y)
+        pdf.text(options.photosTitle || 'Fotos registradas', margin, y)
         y += 9
-
         for (const photo of block.photos) {
           await addPhotoBlock(photo)
         }
       }
 
-      y += 4
+      y += 3
       pdf.setDrawColor(215)
       pdf.line(margin, y, pageWidth - margin, y)
       y += 9
     }
 
-    function drawBarChart(title, percent) {
+    function drawBarChart(titleText, percent) {
       addPageIfNeeded(28)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
-      pdf.text(title, margin, y)
+      pdf.text(titleText, margin, y)
       y += 7
-
       pdf.setDrawColor(180)
       pdf.rect(margin, y, contentWidth, 7)
       pdf.setFillColor(90, 90, 90)
       pdf.rect(margin, y, (contentWidth * percent) / 100, 7, 'F')
       y += 12
-
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(10)
       pdf.text(`${percent.toFixed(1)}%`, margin, y)
-      y += 8
+      y += 9
     }
 
-    function addHeader(title, subtitle) {
-      if (logoDataUrl) {
-        try {
-          pdf.addImage(logoDataUrl, 'PNG', margin, y, 24, 24)
-        } catch {}
-      }
-
-      pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(17)
-      pdf.text(title, logoDataUrl ? margin + 30 : margin, y + 8)
-
-      pdf.setFont('helvetica', 'normal')
-      pdf.setFontSize(10.5)
-      pdf.text(subtitle, logoDataUrl ? margin + 30 : margin, y + 15)
-
-      y += 30
-      pdf.setDrawColor(180)
-      pdf.line(margin, y, pageWidth - margin, y)
-      y += 8
+    if (logoDataUrl) {
+      try {
+        pdf.addImage(logoDataUrl, 'PNG', margin, y, 24, 24)
+      } catch {}
     }
 
-    return {
-      pdf,
-      pageWidth,
-      pageHeight,
-      margin,
-      contentWidth,
-      getY: () => y,
-      setY: (v) => {
-        y = v
-      },
-      addPageIfNeeded,
-      drawWrappedText,
-      sectionTitle,
-      labelValue,
-      addSummaryCard,
-      resetSummaryCardIndex,
-      addPhotoBlock,
-      addBlock,
-      drawBarChart,
-      addHeader,
-    }
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(17)
+    pdf.text(title, logoDataUrl ? margin + 30 : margin, y + 8)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(10.5)
+    pdf.text(subtitle, logoDataUrl ? margin + 30 : margin, y + 15)
+    y += 30
+    pdf.setDrawColor(180)
+    pdf.line(margin, y, pageWidth - margin, y)
+    y += 9
+
+    return { pdf, margin, contentWidth, getY: () => y, setY: (v) => (y = v), sectionTitle, labelValue, addSummaryCard, resetSummaryCards, addBlock, drawBarChart, addPageIfNeeded, drawWrappedText }
   }
 
   async function generateDiaryPdf() {
     if (!project) return
-
-    const helper = await createPdfHelper()
-    const {
-      pdf,
-      sectionTitle,
-      labelValue,
-      addSummaryCard,
-      resetSummaryCardIndex,
-      addBlock,
-      drawBarChart,
-      addHeader,
-      getY,
-      setY,
-    } = helper
-
-    addHeader('DIÁRIO DE OBRA', 'Relatório automático de acompanhamento da obra')
+    const ctx = await createBasePdf('DIÁRIO DE OBRA', 'Relatório automático de acompanhamento da obra')
+    const { pdf, sectionTitle, labelValue, addSummaryCard, resetSummaryCards, addBlock, drawBarChart, getY, setY } = ctx
 
     labelValue('Obra', project.name || '-')
     labelValue('Cliente', project.client_name || '-')
     labelValue('Cidade', project.city || '-')
     labelValue('Data do diário', formatDate(diaryDate))
     labelValue('Responsável pela emissão', 'Denio Losi')
-
     setY(getY() + 3)
 
     sectionTitle('Resumo do dia')
-
-    resetSummaryCardIndex()
+    resetSummaryCards()
     addSummaryCard('Unidades com atividade', diarySummary.moved_units)
     addSummaryCard('Etapas iniciadas', diarySummary.started)
     addSummaryCard('Etapas concluídas', diarySummary.finished)
     addSummaryCard('Fotos registradas', diarySummary.total_photos)
-
-    if (getY() % 1 !== 0) setY(getY())
-    setY(getY() + 0)
-
+    setY(getY() + 38)
     addSummaryCard('Observações registradas', diarySummary.observations)
     addSummaryCard('Registros do histórico', diarySummary.total_logs)
-
-    setY(getY() + 4)
+    setY(getY() + 38)
 
     sectionTitle(`Atividades da data ${formatDate(diaryDate)}`)
-
     if (diaryBlocks.length === 0) {
       pdf.setFont('helvetica', 'italic')
       pdf.setFontSize(11)
-      pdf.text('Nenhuma movimentação encontrada para a data selecionada.', helper.margin, getY())
+      pdf.text('Nenhuma movimentação encontrada para a data selecionada.', 12, getY())
       setY(getY() + 8)
     } else {
       for (const block of diaryBlocks) {
-        await addBlock(block)
+        await addBlock(block, { eventsTitle: 'Atividades registradas no dia', photosTitle: 'Fotos registradas no dia' })
       }
     }
 
     sectionTitle('Resumo atualizado da obra')
-
     labelValue('Total de unidades', projectSummary.total_units)
     labelValue('Unidades pendentes', projectSummary.pending)
     labelValue('Unidades em andamento', projectSummary.in_progress)
     labelValue('Unidades concluídas', projectSummary.done)
     labelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
-
     setY(getY() + 4)
 
     const statusTotal = Math.max(1, projectSummary.total_units)
-    const avgPct = Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0)))
-    const donePct = (projectSummary.done / statusTotal) * 100
-    const inProgressPct = (projectSummary.in_progress / statusTotal) * 100
-    const pendingPct = (projectSummary.pending / statusTotal) * 100
-
-    drawBarChart('Progresso Geral da Obra', avgPct)
-    drawBarChart('Unidades concluídas', donePct)
-    drawBarChart('Unidades em andamento', inProgressPct)
-    drawBarChart('Unidades pendentes', pendingPct)
+    drawBarChart('Progresso Geral da Obra', Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0))))
+    drawBarChart('Unidades concluídas', (projectSummary.done / statusTotal) * 100)
+    drawBarChart('Unidades em andamento', (projectSummary.in_progress / statusTotal) * 100)
+    drawBarChart('Unidades pendentes', (projectSummary.pending / statusTotal) * 100)
 
     const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_diario_de_obra_${safeStr(diaryDate)}.pdf`
     pdf.save(fileName)
@@ -1108,21 +853,8 @@ export default function ObraRelatoriosPage() {
 
   async function generatePeriodPdf() {
     if (!project) return
-
-    const helper = await createPdfHelper()
-    const {
-      pdf,
-      sectionTitle,
-      labelValue,
-      addSummaryCard,
-      resetSummaryCardIndex,
-      addBlock,
-      addHeader,
-      getY,
-      setY,
-    } = helper
-
-    addHeader('RESUMO POR PERÍODO', 'Relatório cronológico consolidado por unidade')
+    const ctx = await createBasePdf('RESUMO POR PERÍODO', 'Relatório estruturado de movimentações da obra')
+    const { pdf, sectionTitle, labelValue, addSummaryCard, resetSummaryCards, addBlock, getY, setY } = ctx
 
     labelValue('Obra', project.name || '-')
     labelValue('Cliente', project.client_name || '-')
@@ -1130,230 +862,117 @@ export default function ObraRelatoriosPage() {
     labelValue('Data inicial', formatDate(startDate))
     labelValue('Data final', formatDate(endDate))
     labelValue('Responsável pela emissão', 'Denio Losi')
-
     setY(getY() + 3)
 
     sectionTitle('Resumo do período')
-
-    resetSummaryCardIndex()
+    resetSummaryCards()
     addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
-    addSummaryCard('Etapas iniciadas', periodSummary.started)
-    addSummaryCard('Etapas concluídas', periodSummary.finished)
-    addSummaryCard('Fotos registradas', periodSummary.total_photos)
-    addSummaryCard('Observações registradas', periodSummary.observations)
-    addSummaryCard('Registros do histórico', periodSummary.total_logs)
+    addSummaryCard('Registros no período', periodSummary.total_logs)
+    addSummaryCard('Fotos no período', periodSummary.total_photos)
+    addSummaryCard('Total de unidades', units.length)
+    setY(getY() + 38)
 
-    setY(getY() + 4)
-
-    sectionTitle(`Movimentações entre ${formatDate(startDate)} e ${formatDate(endDate)}`)
-
+    sectionTitle(`Atividades do período ${formatDate(startDate)} até ${formatDate(endDate)}`)
     if (periodBlocks.length === 0) {
       pdf.setFont('helvetica', 'italic')
       pdf.setFontSize(11)
-      pdf.text('Nenhuma movimentação encontrada no período selecionado.', helper.margin, getY())
+      pdf.text('Nenhuma movimentação encontrada no período selecionado.', 12, getY())
       setY(getY() + 8)
     } else {
       for (const block of periodBlocks) {
-        await addBlock(block)
+        await addBlock(block, { eventsTitle: 'Atividades registradas no período', photosTitle: 'Fotos registradas no período' })
       }
     }
 
-    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_resumo_periodo_${safeStr(startDate)}_a_${safeStr(endDate)}.pdf`
+    sectionTitle('Consolidado por etapa')
+    if (periodSummary.stages.length === 0) {
+      pdf.setFont('helvetica', 'italic')
+      pdf.setFontSize(11)
+      pdf.text('Nenhum consolidado disponível para o período.', 12, getY())
+    } else {
+      for (const row of periodSummary.stages) {
+        labelValue(row.stage_name, `Iniciadas: ${row.started} | Concluídas: ${row.finished} | Observações: ${row.observations}`)
+      }
+    }
+
+    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_resumo_por_periodo_${safeStr(startDate)}_a_${safeStr(endDate)}.pdf`
     pdf.save(fileName)
   }
 
   async function generateObservationsPdf() {
     if (!project) return
-
-    const helper = await createPdfHelper()
-    const {
-      pdf,
-      sectionTitle,
-      labelValue,
-      addSummaryCard,
-      resetSummaryCardIndex,
-      addPageIfNeeded,
-      drawWrappedText,
-      addHeader,
-      getY,
-      setY,
-      margin,
-      contentWidth,
-      pageWidth,
-    } = helper
-
-    addHeader('OBSERVAÇÕES E PENDÊNCIAS', 'Relatório filtrado por status, etapa, unidade e período')
+    const ctx = await createBasePdf('OBSERVAÇÕES E PENDÊNCIAS', 'Relatório filtrado por status, unidade e etapa')
+    const { pdf, sectionTitle, labelValue, addSummaryCard, resetSummaryCards, getY, setY, addPageIfNeeded, drawWrappedText, margin, contentWidth } = ctx
 
     labelValue('Obra', project.name || '-')
     labelValue('Cliente', project.client_name || '-')
     labelValue('Cidade', project.city || '-')
-    labelValue('Período inicial', formatDate(startDate))
-    labelValue('Período final', formatDate(endDate))
     labelValue('Status filtrado', statusFilter ? statusLabel(statusFilter) : 'Todos')
-    labelValue(
-      'Etapas filtradas',
-      stageFilter.length > 0
-        ? stages
-            .filter((s) => stageFilter.includes(s.id))
-            .map((s) => s.name)
-            .join(', ')
-        : 'Todas'
-    )
-    labelValue(
-      'Unidades filtradas',
-      unitFilter.length > 0
-        ? units
-            .filter((u) => unitFilter.includes(u.id))
-            .map((u) => u.identifier)
-            .join(', ')
-        : 'Todas'
-    )
-
-    if (safeStr(textFilter).trim()) {
-      labelValue('Busca textual', textFilter)
-    }
-
+    labelValue('Etapas filtradas', stageFilter.length > 0 ? stages.filter((s) => stageFilter.includes(s.id)).map((s) => s.name).join(', ') : 'Todas')
+    labelValue('Texto pesquisado', textFilter || '-')
+    labelValue('Somente com observação', onlyWithObservation ? 'Sim' : 'Não')
     setY(getY() + 3)
 
     sectionTitle('Resumo do relatório')
-
-    resetSummaryCardIndex()
+    resetSummaryCards()
     addSummaryCard('Total filtrado', observationSummary.total)
     addSummaryCard('Pendentes', observationSummary.pending)
     addSummaryCard('Em andamento', observationSummary.in_progress)
     addSummaryCard('Concluídas', observationSummary.done)
+    setY(getY() + 38)
     addSummaryCard('Com observação', observationSummary.with_notes)
-    addSummaryCard('Etapas selecionadas', stageFilter.length > 0 ? stageFilter.length : stages.length)
-
-    setY(getY() + 4)
+    setY(getY() + 38)
 
     sectionTitle('Itens encontrados')
-
     if (filteredObservationRows.length === 0) {
       pdf.setFont('helvetica', 'italic')
       pdf.setFontSize(11)
-      pdf.text('Nenhum registro encontrado com os filtros selecionados.', margin, getY())
+      pdf.text('Nenhum registro encontrado com os filtros selecionados.', 12, getY())
       setY(getY() + 8)
     } else {
-      filteredObservationRows.forEach((row) => {
+      for (const row of filteredObservationRows) {
         addPageIfNeeded(28)
-
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(12)
-        pdf.text(`Unidade ${safeStr(row.unit?.identifier) || '-'}`, margin + 3, getY() + 6.5)
+        pdf.text(`Unidade ${safeStr(row.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
         labelValue('Etapa', row.stage_display_name)
         labelValue('Status', statusLabel(row.status))
 
-        const relatedLogs = logs
-          .filter((log) => log.unit_stage_id === row.id)
-          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-
+        const relatedLogs = logs.filter((log) => log.unit_stage_id === row.id).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
         const latestLog = relatedLogs[0] || null
         labelValue('Última atualização', latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-')
 
+        addPageIfNeeded(16)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
         pdf.text('Observação', margin, getY())
         setY(getY() + 8)
-
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
-        setY(
-          getY() +
-            drawWrappedText(
-              safeStr(row.notes).trim() || 'Sem observação',
-              margin,
-              getY(),
-              contentWidth,
-              7
-            ) +
-            2
-        )
+        setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 7.2) + 2)
 
+        setY(getY() + 3)
         pdf.setDrawColor(215)
-        pdf.line(margin, getY(), pageWidth - margin, getY())
+        pdf.line(margin, getY(), margin + contentWidth, getY())
         setY(getY() + 9)
-      })
+      }
     }
 
-    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_observacoes_pendencias_${safeStr(startDate)}_a_${safeStr(endDate)}.pdf`
-    pdf.save(fileName)
-  }
-
-  async function generateScreenshotPdf() {
-    if (!reportRef.current || !project) return
-
-    const modeLabel =
-      mode === REPORT_MODE.diary
-        ? 'diario-de-obra'
-        : mode === REPORT_MODE.period
-        ? 'resumo-por-periodo'
-        : 'observacoes-e-pendencias'
-
-    const dateLabel =
-      mode === REPORT_MODE.diary
-        ? safeStr(diaryDate)
-        : `${safeStr(startDate)}_a_${safeStr(endDate)}`
-
-    const fileName = `${safeStr(project.name || 'obra')
-      .replace(/[^\w\-]+/g, '_')
-      .replace(/_+/g, '_')}_${modeLabel}_${dateLabel}.pdf`
-
-    const canvas = await html2canvas(reportRef.current, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      windowWidth: reportRef.current.scrollWidth,
-    })
-
-    const imgData = canvas.toDataURL('image/jpeg', 0.95)
-
-    const pdf = new jsPDF('p', 'mm', 'a4')
-    const pageWidth = pdf.internal.pageSize.getWidth()
-    const pageHeight = pdf.internal.pageSize.getHeight()
-
-    const margin = 8
-    const usableWidth = pageWidth - margin * 2
-    const usableHeight = pageHeight - margin * 2
-
-    const imgWidth = usableWidth
-    const imgHeight = (canvas.height * imgWidth) / canvas.width
-
-    let heightLeft = imgHeight
-    let position = margin
-
-    pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
-    heightLeft -= usableHeight
-
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight + margin
-      pdf.addPage()
-      pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
-      heightLeft -= usableHeight
-    }
-
+    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_observacoes_e_pendencias.pdf`
     pdf.save(fileName)
   }
 
   async function exportCurrentReportToPdf() {
     if (!project) return
-
     setExportingPdf(true)
     try {
-      if (mode === REPORT_MODE.diary) {
-        await generateDiaryPdf()
-      } else if (mode === REPORT_MODE.period) {
-        await generatePeriodPdf()
-      } else if (mode === REPORT_MODE.observations) {
-        await generateObservationsPdf()
-      } else {
-        await generateScreenshotPdf()
-      }
+      if (mode === REPORT_MODE.diary) await generateDiaryPdf()
+      else if (mode === REPORT_MODE.period) await generatePeriodPdf()
+      else if (mode === REPORT_MODE.observations) await generateObservationsPdf()
     } catch (error) {
       console.error(error)
       alert(`Erro ao gerar PDF: ${error?.message || error}`)
@@ -1362,59 +981,13 @@ export default function ObraRelatoriosPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-        Carregando...
-      </div>
-    )
-  }
+  if (loading) return <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>Carregando...</div>
+  if (!project) return <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}><div style={{ marginBottom: 12 }}>Obra não encontrada.</div><Link href="/obras">← Voltar</Link></div>
 
-  if (!project) {
-    return (
-      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-        <div style={{ marginBottom: 12 }}>Obra não encontrada.</div>
-        <Link href="/obras">← Voltar</Link>
-      </div>
-    )
-  }
-
-  const cardStyle = {
-    border: '1px solid #eee',
-    borderRadius: 16,
-    padding: 16,
-    background: '#fff',
-    boxShadow: '0 6px 18px rgba(0,0,0,0.05)',
-  }
-
-  const inputStyle = {
-    width: '100%',
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    outline: 'none',
-    background: '#fff',
-  }
-
-  const buttonStyle = {
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    background: '#111',
-    color: '#fff',
-    cursor: 'pointer',
-    fontWeight: 800,
-  }
-
-  const softButtonStyle = {
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    background: '#fff',
-    color: '#111',
-    cursor: 'pointer',
-    fontWeight: 800,
-  }
+  const cardStyle = { border: '1px solid #eee', borderRadius: 16, padding: 16, background: '#fff', boxShadow: '0 6px 18px rgba(0,0,0,0.05)' }
+  const inputStyle = { width: '100%', padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', outline: 'none', background: '#fff' }
+  const buttonStyle = { padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#111', color: '#fff', cursor: 'pointer', fontWeight: 800 }
+  const softButtonStyle = { padding: '10px 12px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', color: '#111', cursor: 'pointer', fontWeight: 800 }
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -1422,4 +995,152 @@ export default function ObraRelatoriosPage() {
         <div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Relatórios da obra</div>
           <h1 style={{ margin: 0 }}>{project.name || '(Sem nome)'}</h1>
-         
+          <div style={{ marginTop: 8, fontSize: 13, color: '#555' }}>
+            {project.client_name ? <b>{project.client_name}</b> : null}
+            {project.client_name && project.city ? ' • ' : null}
+            {project.city || ''}
+            {project.address ? ` • ${project.address}` : ''}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" onClick={rerun} disabled={running} style={buttonStyle}>
+            {running ? 'Atualizando...' : 'Atualizar relatório'}
+          </button>
+          <button type="button" onClick={exportCurrentReportToPdf} disabled={exportingPdf} style={buttonStyle}>
+            {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
+          </button>
+          <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }}>← Voltar para obra</Link>
+        </div>
+      </div>
+
+      <hr style={{ margin: '18px 0' }} />
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        <button type="button" onClick={() => setMode(REPORT_MODE.diary)} style={{ ...softButtonStyle, background: mode === REPORT_MODE.diary ? '#111' : '#fff', color: mode === REPORT_MODE.diary ? '#fff' : '#111' }}>Diário de obra</button>
+        <button type="button" onClick={() => setMode(REPORT_MODE.period)} style={{ ...softButtonStyle, background: mode === REPORT_MODE.period ? '#111' : '#fff', color: mode === REPORT_MODE.period ? '#fff' : '#111' }}>Resumo por período</button>
+        <button type="button" onClick={() => setMode(REPORT_MODE.observations)} style={{ ...softButtonStyle, background: mode === REPORT_MODE.observations ? '#111' : '#fff', color: mode === REPORT_MODE.observations ? '#fff' : '#111' }}>Observações e pendências</button>
+      </div>
+
+      <div ref={reportRef} style={{ background: '#fff', padding: 4 }}>
+        {mode === REPORT_MODE.diary && (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
+                  <input type="date" value={diaryDate} onChange={(e) => setDiaryDate(e.target.value)} style={inputStyle} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div></div>
+            </div>
+
+            <div style={cardStyle}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Diário de obra — {formatDate(diaryDate)}</div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.</div>
+              {diaryBlocks.length === 0 ? (
+                <div style={{ color: '#666' }}>Nenhuma movimentação encontrada nesta data.</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 14 }}>
+                  {diaryBlocks.map((block) => (
+                    <div key={block.unit_stage_id} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fafafa' }}>
+                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
+                      <div style={{ fontSize: 14, marginBottom: 6 }}><b>Etapa:</b> {block.stage_name}</div>
+                      <div style={{ fontSize: 14, marginBottom: 6 }}><b>Status atual:</b> {statusLabel(block.status)}</div>
+                      {block.started_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><b>Início:</b> {formatDateTime(block.started_at)}</div> : null}
+                      {block.finished_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><b>Conclusão:</b> {formatDateTime(block.finished_at)}</div> : null}
+                      {block.started_at && block.finished_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><b>Duração:</b> {durationLabel(block.started_at, block.finished_at)}</div> : null}
+                      {block.events.length > 0 ? <div style={{ marginBottom: 10 }}><div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades registradas no dia</div><div style={{ display: 'grid', gap: 6 }}>{block.events.map((event, index) => <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>• {formatTime(event.created_at)} — {event.text}{event.user_name ? ` (${event.user_name})` : ''}</div>)}</div></div> : null}
+                      {safeStr(block.notes).trim() ? <div style={{ marginBottom: 12 }}><div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div><div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div></div> : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {mode === REPORT_MODE.period && (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} /></div>
+                <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} /></div>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros no período</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div></div>
+            </div>
+
+            <div style={cardStyle}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Resumo do período — {formatDate(startDate)} até {formatDate(endDate)}</div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório cronológico das atividades registradas no período.</div>
+              {periodBlocks.length === 0 ? <div style={{ color: '#666' }}>Nenhuma movimentação encontrada no período selecionado.</div> : <div style={{ display: 'grid', gap: 14 }}>{periodBlocks.map((block) => <div key={block.unit_stage_id} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fafafa' }}><div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div><div style={{ fontSize: 14, marginBottom: 6 }}><b>Etapa:</b> {block.stage_name}</div><div style={{ fontSize: 14, marginBottom: 6 }}><b>Status atual:</b> {statusLabel(block.status)}</div><div style={{ display: 'grid', gap: 6 }}>{block.events.map((event, index) => <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>• {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}{event.user_name ? ` (${event.user_name})` : ''}</div>)}</div></div>)}</div>}
+            </div>
+          </>
+        )}
+
+        {mode === REPORT_MODE.observations && (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 18 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+                <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}><option value="">Todos</option><option value="pending">Pendente</option><option value="in_progress">Em andamento</option><option value="done">Concluída</option></select></div>
+                <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div><input type="text" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} placeholder="Buscar por unidade, etapa, observação..." style={inputStyle} /></div>
+              </div>
+              <div style={{ marginBottom: 12 }}><label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}><input type="checkbox" checked={onlyWithObservation} onChange={(e) => setOnlyWithObservation(e.target.checked)} />Mostrar somente etapas com observação</label></div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
+                  <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
+                    {units.map((unit) => <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><input type="checkbox" checked={unitFilter.includes(unit.id)} onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)} />Unidade {unit.identifier || '-'}</label>)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, color: '#666' }}>Filtrar por etapas</div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => setStageFilter(stages.map((s) => s.id))} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>Marcar todas</button>
+                      <button type="button" onClick={() => setStageFilter([])} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>Limpar</button>
+                    </div>
+                  </div>
+                  <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
+                    {stages.map((stage) => <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><input type="checkbox" checked={stageFilter.includes(stage.id)} onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)} />{stage.name || '-'}</label>)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Pendentes</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Em andamento</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div></div>
+              <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Com observação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div></div>
+            </div>
+
+            <div style={cardStyle}>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Observações e pendências</div>
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório filtrável por status, unidade, etapa e texto.</div>
+              {filteredObservationRows.length === 0 ? <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div> : <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}><thead><tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}><th style={{ padding: '10px 8px' }}>Unidade</th><th style={{ padding: '10px 8px' }}>Etapa</th><th style={{ padding: '10px 8px' }}>Status</th><th style={{ padding: '10px 8px' }}>Observação</th><th style={{ padding: '10px 8px' }}>Abrir</th></tr></thead><tbody>{filteredObservationRows.map((row) => <tr key={row.id} style={{ borderBottom: '1px solid #f1f1f1', verticalAlign: 'top' }}><td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.unit?.identifier || '-'}</td><td style={{ padding: '10px 8px' }}>{row.stage_display_name}</td><td style={{ padding: '10px 8px' }}>{statusLabel(row.status)}</td><td style={{ padding: '10px 8px', maxWidth: 420 }}>{safeStr(row.notes).trim() || <span style={{ color: '#999' }}>Sem observação</span>}</td><td style={{ padding: '10px 8px' }}><Link href={`/unidades/${row.unit_id}`} style={{ textDecoration: 'none' }}>Abrir unidade</Link></td></tr>)}</tbody></table></div>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
