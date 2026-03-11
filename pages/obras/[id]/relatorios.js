@@ -19,6 +19,11 @@ const STATUS_LABEL = {
 
 const PHOTO_BUCKET = 'unit-stage-photos'
 
+// Se depois quiser adicionar logo fixa hospedada no projeto,
+// basta colocar a URL aqui, por exemplo:
+// const REPORT_LOGO_URL = '/logo.png'
+const REPORT_LOGO_URL = ''
+
 function safeStr(v) {
   return (v ?? '').toString()
 }
@@ -452,7 +457,6 @@ export default function ObraRelatoriosPage() {
 
   const stageTimelineByUnitStageId = useMemo(() => {
     const map = {}
-
     const sortedLogs = [...logs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
 
     sortedLogs.forEach((log) => {
@@ -800,6 +804,11 @@ export default function ObraRelatoriosPage() {
     const contentWidth = pageWidth - margin * 2
     let y = margin
 
+    let logoDataUrl = null
+    if (REPORT_LOGO_URL) {
+      logoDataUrl = await loadImageAsDataUrl(REPORT_LOGO_URL)
+    }
+
     function addPageIfNeeded(extra = 10) {
       if (y + extra > pageHeight - margin) {
         pdf.addPage()
@@ -807,45 +816,66 @@ export default function ObraRelatoriosPage() {
       }
     }
 
-    function drawText(text, x, topY, options = {}) {
-      const maxWidth = options.maxWidth || contentWidth
+    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 5) {
       const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
       pdf.text(lines, x, topY)
-      return lines.length * (options.lineHeight || 5)
-    }
-
-    function line(height = 4) {
-      y += height
+      return lines.length * lineHeight
     }
 
     function sectionTitle(text) {
-      addPageIfNeeded(12)
+      addPageIfNeeded(16)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(13)
       pdf.text(text, margin, y)
-      y += 7
-      pdf.setDrawColor(180)
+      y += 6
+      pdf.setDrawColor(190)
       pdf.line(margin, y, pageWidth - margin, y)
-      y += 5
+      y += 6
     }
 
     function labelValue(label, value) {
-      addPageIfNeeded(6)
+      addPageIfNeeded(8)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(`${label}:`, margin, y)
       pdf.setFont('helvetica', 'normal')
-      pdf.text(safeStr(value) || '-', margin + 24, y)
-      y += 6
+      const used = drawWrappedText(safeStr(value) || '-', margin + 32, y, contentWidth - 32, 5)
+      y += Math.max(6, used)
+    }
+
+    function addSummaryCard(label, value) {
+      const cardWidth = (contentWidth - 6) / 2
+      const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
+      const cardY = y
+      const cardHeight = 22
+
+      pdf.setDrawColor(220)
+      pdf.rect(x, cardY, cardWidth, cardHeight)
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9)
+      const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
+      pdf.text(labelLines, x + 3, cardY + 6)
+
+      const labelHeight = labelLines.length * 4
+
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(13)
+      pdf.text(safeStr(value), x + 3, cardY + 8 + labelHeight)
+
+      summaryCardIndex += 1
+      if (summaryCardIndex % 2 === 0) {
+        y += cardHeight + 6
+      }
     }
 
     async function addPhotoBlock(photo) {
-      addPageIfNeeded(50)
+      addPageIfNeeded(72)
 
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(getPhotoKindLabel(photo.kind), margin, y)
-      y += 5
+      y += 6
 
       let signedUrl = null
       if (photo.path) {
@@ -861,16 +891,16 @@ export default function ObraRelatoriosPage() {
       const imageDataUrl = signedUrl ? await loadImageAsDataUrl(signedUrl) : null
 
       if (imageDataUrl) {
-        addPageIfNeeded(62)
+        addPageIfNeeded(68)
 
         const imgX = margin
         const imgY = y
-        const imgWidth = Math.min(90, contentWidth)
-        const imgHeight = 60
+        const imgWidth = Math.min(95, contentWidth)
+        const imgHeight = 62
 
         try {
           pdf.addImage(imageDataUrl, 'JPEG', imgX, imgY, imgWidth, imgHeight)
-          y += imgHeight + 4
+          y += imgHeight + 5
         } catch {
           pdf.setFont('helvetica', 'italic')
           pdf.setFontSize(10)
@@ -887,40 +917,32 @@ export default function ObraRelatoriosPage() {
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(10)
 
-      drawText(
+      y += drawWrappedText(
         `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
         margin,
         y,
-        { maxWidth: contentWidth, lineHeight: 5 }
+        contentWidth,
+        5
       )
-      y += 5
 
-      drawText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, {
-        maxWidth: contentWidth,
-        lineHeight: 5,
-      })
-      y += 5
+      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 5)
 
       if (safeStr(photo.caption).trim()) {
-        const used = drawText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, {
-          maxWidth: contentWidth,
-          lineHeight: 5,
-        })
-        y += used
+        y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 5)
       }
 
-      line(4)
+      y += 4
     }
 
     async function addDiaryBlock(block) {
-      addPageIfNeeded(28)
+      addPageIfNeeded(34)
 
       pdf.setFillColor(245, 245, 245)
-      pdf.rect(margin, y, contentWidth, 8, 'F')
+      pdf.rect(margin, y, contentWidth, 9, 'F')
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(12)
-      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 2, y + 5.5)
-      y += 12
+      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, y + 6)
+      y += 14
 
       labelValue('Etapa', block.stage_name)
       labelValue('Status atual', statusLabel(block.status))
@@ -940,11 +962,11 @@ export default function ObraRelatoriosPage() {
       const relevantEvents = block.events.filter((event) => safeStr(event.text).trim())
 
       if (relevantEvents.length > 0) {
-        addPageIfNeeded(10)
+        addPageIfNeeded(12)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
         pdf.text('Atividades registradas no dia', margin, y)
-        y += 6
+        y += 7
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
@@ -952,84 +974,89 @@ export default function ObraRelatoriosPage() {
         relevantEvents.forEach((event) => {
           addPageIfNeeded(8)
           const txt = `${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-          const used = drawText(`• ${txt}`, margin + 2, y, {
-            maxWidth: contentWidth - 4,
-            lineHeight: 5,
-          })
-          y += used
+          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 5)
         })
 
-        line(2)
+        y += 2
       }
 
       if (safeStr(block.notes).trim()) {
-        addPageIfNeeded(12)
+        addPageIfNeeded(14)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
         pdf.text('Observação da etapa', margin, y)
-        y += 6
+        y += 7
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
-        const used = drawText(block.notes, margin, y, {
-          maxWidth: contentWidth,
-          lineHeight: 5,
-        })
-        y += used + 2
+        y += drawWrappedText(block.notes, margin, y, contentWidth, 5)
+        y += 2
       }
 
       if (block.photos.length > 0) {
-        addPageIfNeeded(10)
+        addPageIfNeeded(12)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
         pdf.text('Fotos registradas no dia', margin, y)
-        y += 7
+        y += 8
 
         for (const photo of block.photos) {
           await addPhotoBlock(photo)
         }
       }
 
-      line(4)
+      y += 3
       pdf.setDrawColor(215)
       pdf.line(margin, y, pageWidth - margin, y)
-      y += 6
+      y += 8
     }
 
-    function addSummaryCard(label, value) {
-      const cardWidth = (contentWidth - 6) / 2
-      const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
-      const cardY = y
-
-      pdf.setDrawColor(220)
-      pdf.rect(x, cardY, cardWidth, 16)
-      pdf.setFont('helvetica', 'normal')
-      pdf.setFontSize(9.5)
-      pdf.text(label, x + 3, cardY + 6)
+    function drawBarChart(title, percent) {
+      addPageIfNeeded(22)
       pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(13)
-      pdf.text(safeStr(value), x + 3, cardY + 12)
+      pdf.setFontSize(10.5)
+      pdf.text(title, margin, y)
+      y += 6
 
-      summaryCardIndex += 1
-      if (summaryCardIndex % 2 === 0) {
-        y += 20
-      }
+      pdf.setDrawColor(180)
+      pdf.rect(margin, y, contentWidth, 7)
+      pdf.setFillColor(90, 90, 90)
+      pdf.rect(margin, y, (contentWidth * percent) / 100, 7, 'F')
+      y += 11
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10)
+      pdf.text(`${percent.toFixed(1)}%`, margin, y)
+      y += 8
+    }
+
+    if (logoDataUrl) {
+      try {
+        pdf.addImage(logoDataUrl, 'PNG', margin, y, 24, 24)
+      } catch {}
     }
 
     pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(16)
-    pdf.text('DIÁRIO DE OBRA', margin, y)
-    y += 8
+    pdf.setFontSize(17)
+    pdf.text('DIÁRIO DE OBRA', logoDataUrl ? margin + 30 : margin, y + 8)
 
     pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(11)
+    pdf.setFontSize(10.5)
+    pdf.text('Relatório automático de acompanhamento da obra', logoDataUrl ? margin + 30 : margin, y + 15)
+
+    y += 30
+
+    pdf.setDrawColor(180)
+    pdf.line(margin, y, pageWidth - margin, y)
+    y += 8
+
     labelValue('Obra', project.name || '-')
     labelValue('Cliente', project.client_name || '-')
     labelValue('Cidade', project.city || '-')
     labelValue('Data do diário', formatDate(diaryDate))
     labelValue('Responsável pela emissão', 'Denio Losi')
 
-    line(3)
+    y += 3
 
     sectionTitle('Resumo do dia')
 
@@ -1038,12 +1065,19 @@ export default function ObraRelatoriosPage() {
     addSummaryCard('Etapas iniciadas', diarySummary.started)
     addSummaryCard('Etapas concluídas', diarySummary.finished)
     addSummaryCard('Fotos registradas', diarySummary.total_photos)
-    if (summaryCardIndex % 2 !== 0) y += 20
+
+    if (summaryCardIndex % 2 !== 0) {
+      y += 28
+    }
+
     addSummaryCard('Observações registradas', diarySummary.observations)
     addSummaryCard('Registros do histórico', diarySummary.total_logs)
-    if (summaryCardIndex % 2 !== 0) y += 20
 
-    line(3)
+    if (summaryCardIndex % 2 !== 0) {
+      y += 28
+    }
+
+    y += 4
 
     sectionTitle(`Atividades da data ${formatDate(diaryDate)}`)
 
@@ -1066,49 +1100,18 @@ export default function ObraRelatoriosPage() {
     labelValue('Unidades concluídas', projectSummary.done)
     labelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
 
-    addPageIfNeeded(26)
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(10.5)
-    pdf.text('Gráfico simples de progresso', margin, y)
-    y += 8
-
-    const barX = margin
-    const barY = y
-    const barWidth = contentWidth
-    const barHeight = 10
-    const pct = Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0)))
-
-    pdf.setDrawColor(180)
-    pdf.rect(barX, barY, barWidth, barHeight)
-    pdf.setFillColor(70, 70, 70)
-    pdf.rect(barX, barY, (barWidth * pct) / 100, barHeight, 'F')
-    y += 15
-
-    pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(10)
-    pdf.text(`${pct.toFixed(2)}% concluído`, margin, y)
-    y += 7
+    y += 4
 
     const statusTotal = Math.max(1, projectSummary.total_units)
+    const avgPct = Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0)))
     const donePct = (projectSummary.done / statusTotal) * 100
     const inProgressPct = (projectSummary.in_progress / statusTotal) * 100
     const pendingPct = (projectSummary.pending / statusTotal) * 100
 
-    function drawMiniBar(label, percent) {
-      addPageIfNeeded(10)
-      pdf.setFont('helvetica', 'normal')
-      pdf.text(`${label}: ${percent.toFixed(1)}%`, margin, y)
-      y += 2
-      pdf.setDrawColor(180)
-      pdf.rect(margin, y, contentWidth, 6)
-      pdf.setFillColor(120, 120, 120)
-      pdf.rect(margin, y, (contentWidth * percent) / 100, 6, 'F')
-      y += 10
-    }
-
-    drawMiniBar('Concluídas', donePct)
-    drawMiniBar('Em andamento', inProgressPct)
-    drawMiniBar('Pendentes', pendingPct)
+    drawBarChart('Progresso Geral da Obra', avgPct)
+    drawBarChart('Unidades concluídas', donePct)
+    drawBarChart('Unidades em andamento', inProgressPct)
+    drawBarChart('Unidades pendentes', pendingPct)
 
     const fileName = `${safeStr(project.name || 'obra')
       .replace(/[^\w\-]+/g, '_')
