@@ -17,8 +17,21 @@ const STATUS_LABEL = {
   done: 'Concluída',
 }
 
+const PHOTO_BUCKET = 'unit-stage-photos'
+
 function safeStr(v) {
   return (v ?? '').toString()
+}
+
+function parseMaybeJson(value) {
+  if (!value) return null
+  if (typeof value === 'object') return value
+  if (typeof value !== 'string') return null
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
 }
 
 function formatDate(value) {
@@ -26,6 +39,13 @@ function formatDate(value) {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleDateString('pt-BR')
+}
+
+function formatTime(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
 }
 
 function formatDateTime(value) {
@@ -67,15 +87,14 @@ function statusLabel(status) {
   return STATUS_LABEL[normalizeStatus(status)] || safeStr(status) || '-'
 }
 
-function parseMaybeJson(value) {
-  if (!value) return null
-  if (typeof value === 'object') return value
-  if (typeof value !== 'string') return null
-  try {
-    return JSON.parse(value)
-  } catch {
-    return null
-  }
+function oldStatusFromLog(log) {
+  const oldValue = parseMaybeJson(log?.old_value)
+  return normalizeStatus(oldValue?.status)
+}
+
+function newStatusFromLog(log) {
+  const newValue = parseMaybeJson(log?.new_value)
+  return normalizeStatus(newValue?.status)
 }
 
 function getPhotoKindLabel(kind) {
@@ -85,46 +104,77 @@ function getPhotoKindLabel(kind) {
   if (k === 'progress') return 'Foto de andamento'
   if (k === 'completion') return 'Foto de conclusão'
   if (k === 'issue') return 'Foto de pendência'
+  if (k === 'image') return 'Foto'
   return kind || 'Foto'
 }
 
-function getLogTitle(log) {
+function actionToHuman(log) {
   const action = safeStr(log?.action).toLowerCase()
-  const kind = safeStr(log?.kind).toLowerCase()
-  const description = safeStr(log?.description).trim()
-  const metadata = parseMaybeJson(log?.metadata)
 
-  if (description) return description
-  if (metadata?.description) return safeStr(metadata.description)
+  if (action === 'status_changed') {
+    const fromStatus = oldStatusFromLog(log)
+    const toStatus = newStatusFromLog(log)
 
-  if (action.includes('start')) return 'Etapa iniciada'
-  if (action.includes('done') || action.includes('complete') || action.includes('finish')) return 'Etapa concluída'
-  if (action.includes('photo')) return 'Foto adicionada'
-  if (action.includes('note') || action.includes('obs')) return 'Observação atualizada'
-  if (action.includes('create')) return 'Etapa criada'
-  if (action.includes('delete')) return 'Registro removido'
-  if (kind) return kind
-  if (action) return action
-  return 'Movimentação registrada'
-}
-
-function getLogExtra(log) {
-  const metadata = parseMaybeJson(log?.metadata)
-  const parts = []
-
-  if (metadata?.from_status || metadata?.to_status) {
-    const fromLabel = metadata?.from_status ? statusLabel(metadata.from_status) : ''
-    const toLabel = metadata?.to_status ? statusLabel(metadata.to_status) : ''
-    if (fromLabel || toLabel) {
-      parts.push(`Status: ${fromLabel || '-'} → ${toLabel || '-'}`)
-    }
+    if (fromStatus === 'pending' && toStatus === 'in_progress') return 'Etapa iniciada'
+    if (fromStatus === 'in_progress' && toStatus === 'done') return 'Etapa concluída'
+    if (fromStatus === 'pending' && toStatus === 'done') return 'Etapa concluída'
+    return `Status alterado de ${statusLabel(fromStatus)} para ${statusLabel(toStatus)}`
   }
 
-  if (metadata?.notes) parts.push(`Obs: ${metadata.notes}`)
-  if (metadata?.caption) parts.push(`Legenda: ${metadata.caption}`)
-  if (metadata?.file_name) parts.push(`Arquivo: ${metadata.file_name}`)
+  if (action === 'notes_updated') return 'Observação atualizada'
+  if (action === 'photo_added') return 'Foto registrada'
+  return ''
+}
 
-  return parts.join(' • ')
+function durationLabel(startValue, endValue) {
+  if (!startValue || !endValue) return ''
+  const start = new Date(startValue).getTime()
+  const end = new Date(endValue).getTime()
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return ''
+
+  const diffMs = end - start
+  const totalHours = Math.floor(diffMs / (1000 * 60 * 60))
+  const totalDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+  if (totalDays >= 1) {
+    return `${totalDays} dia${totalDays > 1 ? 's' : ''}`
+  }
+
+  if (totalHours >= 1) {
+    return `${totalHours} hora${totalHours > 1 ? 's' : ''}`
+  }
+
+  const totalMinutes = Math.max(1, Math.floor(diffMs / (1000 * 60)))
+  return `${totalMinutes} minuto${totalMinutes > 1 ? 's' : ''}`
+}
+
+function loadImageAsDataUrl(url) {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve(null)
+      return
+    }
+
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.naturalWidth || img.width
+        canvas.height = img.naturalHeight || img.height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+        resolve(dataUrl)
+      } catch {
+        resolve(null)
+      }
+    }
+
+    img.onerror = () => resolve(null)
+    img.src = url
+  })
 }
 
 export default function ObraRelatoriosPage() {
@@ -148,6 +198,7 @@ export default function ObraRelatoriosPage() {
   const [unitStages, setUnitStages] = useState([])
   const [photos, setPhotos] = useState([])
   const [logs, setLogs] = useState([])
+  const [profilesMap, setProfilesMap] = useState({})
 
   const [mode, setMode] = useState(REPORT_MODE.diary)
 
@@ -198,6 +249,7 @@ export default function ObraRelatoriosPage() {
       setUnitStages([])
       setPhotos([])
       setLogs([])
+      setProfilesMap({})
       setLoading(false)
       return
     }
@@ -235,7 +287,7 @@ export default function ObraRelatoriosPage() {
 
       supabase
         .from('unit_stage_logs')
-        .select('*')
+        .select('id, unit_stage_id, user_id, action, old_value, new_value, created_at')
         .order('created_at', { ascending: false }),
     ])
 
@@ -271,32 +323,50 @@ export default function ObraRelatoriosPage() {
 
     const unitsRows = Array.isArray(unitsRes.data) ? unitsRes.data : []
     const stagesRows = Array.isArray(stagesRes.data) ? stagesRes.data : []
+    const unitStagesRowsRaw = Array.isArray(unitStagesRes.data) ? unitStagesRes.data : []
+    const photosRowsRaw = Array.isArray(photosRes.data) ? photosRes.data : []
+    const logsRowsRaw = Array.isArray(logsRes.data) ? logsRes.data : []
 
     const unitIds = new Set(unitsRows.map((u) => u.id))
     const stageIds = new Set(stagesRows.map((s) => s.id))
 
-    const unitStagesRows = (Array.isArray(unitStagesRes.data) ? unitStagesRes.data : []).filter(
+    const unitStagesRows = unitStagesRowsRaw.filter(
       (row) => unitIds.has(row.unit_id) && stageIds.has(row.stage_id)
     )
 
     const unitStageIds = new Set(unitStagesRows.map((row) => row.id))
 
-    const photosRows = (Array.isArray(photosRes.data) ? photosRes.data : []).filter((row) =>
-      unitStageIds.has(row.unit_stage_id)
+    const photosRows = photosRowsRaw.filter((row) => unitStageIds.has(row.unit_stage_id))
+    const logsRows = logsRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
+
+    const userIds = Array.from(
+      new Set(
+        [...photosRows.map((x) => x.user_id), ...logsRows.map((x) => x.user_id)]
+          .filter(Boolean)
+      )
     )
 
-    const logsRows = (Array.isArray(logsRes.data) ? logsRes.data : []).filter((row) => {
-      const direct = row?.unit_stage_id && unitStageIds.has(row.unit_stage_id)
-      const meta = parseMaybeJson(row?.metadata)
-      const metaUnitStageId = meta?.unit_stage_id
-      return direct || (metaUnitStageId && unitStageIds.has(metaUnitStageId))
-    })
+    let nextProfilesMap = {}
+    if (userIds.length > 0) {
+      const { data: profileRows, error: profilesErr } = await supabase
+        .from('profiles')
+        .select('id, full_name, email')
+        .in('id', userIds)
+
+      if (!profilesErr && Array.isArray(profileRows)) {
+        nextProfilesMap = profileRows.reduce((acc, row) => {
+          acc[row.id] = row
+          return acc
+        }, {})
+      }
+    }
 
     setUnits(unitsRows)
     setStages(stagesRows)
     setUnitStages(unitStagesRows)
     setPhotos(photosRows)
     setLogs(logsRows)
+    setProfilesMap(nextProfilesMap)
     setLoading(false)
   }
 
@@ -380,66 +450,140 @@ export default function ObraRelatoriosPage() {
     return photos.filter((row) => inRange(row.created_at, periodRange.from, periodRange.to))
   }, [photos, periodRange])
 
-  const diaryEventsByUnit = useMemo(() => {
+  const stageTimelineByUnitStageId = useMemo(() => {
     const map = {}
 
-    diaryLogs.forEach((log) => {
-      const metadata = parseMaybeJson(log?.metadata)
-      const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
-      const us = unitStagesById[unitStageId]
-      if (!us) return
+    const sortedLogs = [...logs].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
 
+    sortedLogs.forEach((log) => {
+      const unitStageId = log.unit_stage_id
+      if (!unitStageId) return
+
+      if (!map[unitStageId]) {
+        map[unitStageId] = {
+          started_at: null,
+          finished_at: null,
+        }
+      }
+
+      if (log.action === 'status_changed') {
+        const fromStatus = oldStatusFromLog(log)
+        const toStatus = newStatusFromLog(log)
+
+        if (!map[unitStageId].started_at) {
+          if (
+            (fromStatus === 'pending' && toStatus === 'in_progress') ||
+            (fromStatus === 'pending' && toStatus === 'done')
+          ) {
+            map[unitStageId].started_at = log.created_at
+          }
+        }
+
+        if (!map[unitStageId].finished_at) {
+          if (toStatus === 'done') {
+            map[unitStageId].finished_at = log.created_at
+          }
+        }
+      }
+    })
+
+    return map
+  }, [logs])
+
+  const diaryBlocks = useMemo(() => {
+    const relevantActions = new Set(['status_changed', 'notes_updated'])
+    const blockMap = {}
+
+    function ensureBlock(unitStageId) {
+      if (!unitStageId) return null
+      const us = unitStagesById[unitStageId]
+      if (!us) return null
       const unit = unitsById[us.unit_id]
       const stage = stagesById[us.stage_id]
-      const unitKey = unit?.id || 'unknown'
+      if (!unit) return null
 
-      if (!map[unitKey]) {
-        map[unitKey] = {
+      if (!blockMap[unitStageId]) {
+        const timeline = stageTimelineByUnitStageId[unitStageId] || {}
+        blockMap[unitStageId] = {
+          unit_stage_id: unitStageId,
           unit,
+          stage,
+          unitStage: us,
+          stage_name: safeStr(us.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa',
+          status: us.status,
+          notes: safeStr(us.notes).trim(),
+          started_at: timeline.started_at || null,
+          finished_at: timeline.finished_at || null,
+          photos: [],
           events: [],
         }
       }
 
-      map[unitKey].events.push({
+      return blockMap[unitStageId]
+    }
+
+    diaryLogs.forEach((log) => {
+      if (!relevantActions.has(log.action)) return
+      const block = ensureBlock(log.unit_stage_id)
+      if (!block) return
+
+      let description = actionToHuman(log)
+      if (!description) return
+
+      if (log.action === 'notes_updated') {
+        const newValue = parseMaybeJson(log?.new_value)
+        const noteText = safeStr(newValue?.notes).trim()
+        if (noteText) {
+          description = `Observação atualizada: ${noteText}`
+        } else {
+          description = 'Observação removida'
+        }
+      }
+
+      block.events.push({
         type: 'log',
         created_at: log.created_at,
-        stage_name: safeStr(us.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa',
-        title: getLogTitle(log),
-        extra: getLogExtra(log),
+        text: description,
+        user_name:
+          safeStr(profilesMap[log.user_id]?.full_name).trim() ||
+          safeStr(profilesMap[log.user_id]?.email).trim() ||
+          '',
       })
     })
 
     diaryPhotos.forEach((photo) => {
-      const us = unitStagesById[photo.unit_stage_id]
-      if (!us) return
-
-      const unit = unitsById[us.unit_id]
-      const stage = stagesById[us.stage_id]
-      const unitKey = unit?.id || 'unknown'
-
-      if (!map[unitKey]) {
-        map[unitKey] = {
-          unit,
-          events: [],
-        }
-      }
-
-      map[unitKey].events.push({
+      const block = ensureBlock(photo.unit_stage_id)
+      if (!block) return
+      block.photos.push({
+        ...photo,
+        user_name:
+          safeStr(profilesMap[photo.user_id]?.full_name).trim() ||
+          safeStr(profilesMap[photo.user_id]?.email).trim() ||
+          '',
+      })
+      block.events.push({
         type: 'photo',
         created_at: photo.created_at,
-        stage_name: safeStr(us.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa',
-        title: getPhotoKindLabel(photo.kind),
-        extra: safeStr(photo.caption).trim(),
+        text: getPhotoKindLabel(photo.kind),
+        user_name:
+          safeStr(profilesMap[photo.user_id]?.full_name).trim() ||
+          safeStr(profilesMap[photo.user_id]?.email).trim() ||
+          '',
       })
     })
 
-    return Object.values(map)
-      .map((item) => ({
-        ...item,
-        events: item.events.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+    return Object.values(blockMap)
+      .map((block) => ({
+        ...block,
+        events: block.events.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+        photos: block.photos.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
       }))
-      .sort((a, b) => safeStr(a.unit?.identifier).localeCompare(safeStr(b.unit?.identifier), 'pt-BR'))
-  }, [diaryLogs, diaryPhotos, unitStagesById, unitsById, stagesById])
+      .sort((a, b) => {
+        const unitCmp = safeStr(a.unit?.identifier).localeCompare(safeStr(b.unit?.identifier), 'pt-BR')
+        if (unitCmp !== 0) return unitCmp
+        return safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')
+      })
+  }, [diaryLogs, diaryPhotos, unitStagesById, unitsById, stagesById, stageTimelineByUnitStageId, profilesMap])
 
   const diarySummary = useMemo(() => {
     const unitIds = new Set()
@@ -447,23 +591,15 @@ export default function ObraRelatoriosPage() {
     let finished = 0
     let observations = 0
 
-    diaryLogs.forEach((log) => {
-      const metadata = parseMaybeJson(log?.metadata)
-      const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
-      const us = unitStagesById[unitStageId]
-      if (us?.unit_id) unitIds.add(us.unit_id)
+    diaryBlocks.forEach((block) => {
+      if (block.unit?.id) unitIds.add(block.unit.id)
 
-      const action = safeStr(log?.action).toLowerCase()
-      const title = getLogTitle(log).toLowerCase()
-
-      if (action.includes('start') || title.includes('inici')) started += 1
-      if (action.includes('done') || action.includes('complete') || action.includes('finish') || title.includes('conclu')) finished += 1
-      if (action.includes('note') || action.includes('obs') || title.includes('observa')) observations += 1
-    })
-
-    diaryPhotos.forEach((photo) => {
-      const us = unitStagesById[photo.unit_stage_id]
-      if (us?.unit_id) unitIds.add(us.unit_id)
+      block.events.forEach((event) => {
+        const text = safeStr(event.text).toLowerCase()
+        if (text.includes('etapa iniciada')) started += 1
+        if (text.includes('etapa concluída')) finished += 1
+        if (text.includes('observação')) observations += 1
+      })
     })
 
     return {
@@ -474,18 +610,15 @@ export default function ObraRelatoriosPage() {
       finished,
       observations,
     }
-  }, [diaryLogs, diaryPhotos, unitStagesById])
+  }, [diaryBlocks, diaryLogs.length, diaryPhotos.length])
 
   const periodSummary = useMemo(() => {
     const unitIds = new Set()
     const stageCounters = {}
 
     periodLogs.forEach((log) => {
-      const metadata = parseMaybeJson(log?.metadata)
-      const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
-      const us = unitStagesById[unitStageId]
+      const us = unitStagesById[log.unit_stage_id]
       if (!us) return
-
       if (us.unit_id) unitIds.add(us.unit_id)
 
       const stage = stagesById[us.stage_id]
@@ -501,12 +634,16 @@ export default function ObraRelatoriosPage() {
         }
       }
 
-      const action = safeStr(log?.action).toLowerCase()
-      const title = getLogTitle(log).toLowerCase()
+      if (log.action === 'status_changed') {
+        const fromStatus = oldStatusFromLog(log)
+        const toStatus = newStatusFromLog(log)
+        if (fromStatus === 'pending' && toStatus === 'in_progress') stageCounters[key].started += 1
+        if (toStatus === 'done') stageCounters[key].finished += 1
+      }
 
-      if (action.includes('start') || title.includes('inici')) stageCounters[key].started += 1
-      if (action.includes('done') || action.includes('complete') || action.includes('finish') || title.includes('conclu')) stageCounters[key].finished += 1
-      if (action.includes('note') || action.includes('obs') || title.includes('observa')) stageCounters[key].observations += 1
+      if (log.action === 'notes_updated') {
+        stageCounters[key].observations += 1
+      }
     })
 
     periodPhotos.forEach((photo) => {
@@ -546,9 +683,7 @@ export default function ObraRelatoriosPage() {
 
         if (startDate || endDate) {
           const relatedLogs = logs.filter((log) => {
-            const metadata = parseMaybeJson(log?.metadata)
-            const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
-            return unitStageId === row.id && inRange(log.created_at, periodRange.from, periodRange.to)
+            return log.unit_stage_id === row.id && inRange(log.created_at, periodRange.from, periodRange.to)
           })
 
           const relatedPhotos = photos.filter((photo) => {
@@ -614,6 +749,28 @@ export default function ObraRelatoriosPage() {
     return counts
   }, [filteredObservationRows])
 
+  const projectSummary = useMemo(() => {
+    const counts = {
+      total_units: units.length,
+      pending: 0,
+      in_progress: 0,
+      done: 0,
+      avg_progress: 0,
+    }
+
+    let progressSum = 0
+    units.forEach((unit) => {
+      const status = normalizeStatus(unit.status)
+      if (status === 'pending') counts.pending += 1
+      if (status === 'in_progress') counts.in_progress += 1
+      if (status === 'done') counts.done += 1
+      progressSum += Number(unit.progress || 0)
+    })
+
+    counts.avg_progress = units.length > 0 ? progressSum / units.length : 0
+    return counts
+  }, [units])
+
   function toggleMultiValue(setter, currentValues, value) {
     if (!value) return
     if (currentValues.includes(value)) {
@@ -632,63 +789,400 @@ export default function ObraRelatoriosPage() {
     }
   }
 
-  async function exportCurrentReportToPdf() {
-    if (!reportRef.current || !project) return
+  async function generateDiaryPdf() {
+    if (!project) return
 
-    setExportingPdf(true)
+    const pdf = new jsPDF('p', 'mm', 'a4')
+    const pageWidth = pdf.internal.pageSize.getWidth()
+    const pageHeight = pdf.internal.pageSize.getHeight()
 
-    try {
-      const modeLabel =
-        mode === REPORT_MODE.diary
-          ? 'diario-de-obra'
-          : mode === REPORT_MODE.period
-          ? 'resumo-por-periodo'
-          : 'observacoes-e-pendencias'
+    const margin = 12
+    const contentWidth = pageWidth - margin * 2
+    let y = margin
 
-      const dateLabel =
-        mode === REPORT_MODE.diary
-          ? safeStr(diaryDate)
-          : `${safeStr(startDate)}_a_${safeStr(endDate)}`
-
-      const fileName = `${safeStr(project.name || 'obra')
-        .replace(/[^\w\-]+/g, '_')
-        .replace(/_+/g, '_')}_${modeLabel}_${dateLabel}.pdf`
-
-      const canvas = await html2canvas(reportRef.current, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        windowWidth: reportRef.current.scrollWidth,
-      })
-
-      const imgData = canvas.toDataURL('image/jpeg', 0.95)
-
-      const pdf = new jsPDF('p', 'mm', 'a4')
-      const pageWidth = pdf.internal.pageSize.getWidth()
-      const pageHeight = pdf.internal.pageSize.getHeight()
-
-      const margin = 8
-      const usableWidth = pageWidth - margin * 2
-      const usableHeight = pageHeight - margin * 2
-
-      const imgWidth = usableWidth
-      const imgHeight = (canvas.height * imgWidth) / canvas.width
-
-      let heightLeft = imgHeight
-      let position = margin
-
-      pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
-      heightLeft -= usableHeight
-
-      while (heightLeft > 0) {
-        position = heightLeft - imgHeight + margin
+    function addPageIfNeeded(extra = 10) {
+      if (y + extra > pageHeight - margin) {
         pdf.addPage()
-        pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
-        heightLeft -= usableHeight
+        y = margin
+      }
+    }
+
+    function drawText(text, x, topY, options = {}) {
+      const maxWidth = options.maxWidth || contentWidth
+      const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
+      pdf.text(lines, x, topY)
+      return lines.length * (options.lineHeight || 5)
+    }
+
+    function line(height = 4) {
+      y += height
+    }
+
+    function sectionTitle(text) {
+      addPageIfNeeded(12)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(13)
+      pdf.text(text, margin, y)
+      y += 7
+      pdf.setDrawColor(180)
+      pdf.line(margin, y, pageWidth - margin, y)
+      y += 5
+    }
+
+    function labelValue(label, value) {
+      addPageIfNeeded(6)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(10.5)
+      pdf.text(`${label}:`, margin, y)
+      pdf.setFont('helvetica', 'normal')
+      pdf.text(safeStr(value) || '-', margin + 24, y)
+      y += 6
+    }
+
+    async function addPhotoBlock(photo) {
+      addPageIfNeeded(50)
+
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(10.5)
+      pdf.text(getPhotoKindLabel(photo.kind), margin, y)
+      y += 5
+
+      let signedUrl = null
+      if (photo.path) {
+        const { data, error } = await supabase.storage
+          .from(PHOTO_BUCKET)
+          .createSignedUrl(photo.path, 60 * 30)
+
+        if (!error && data?.signedUrl) {
+          signedUrl = data.signedUrl
+        }
       }
 
-      pdf.save(fileName)
+      const imageDataUrl = signedUrl ? await loadImageAsDataUrl(signedUrl) : null
+
+      if (imageDataUrl) {
+        addPageIfNeeded(62)
+
+        const imgX = margin
+        const imgY = y
+        const imgWidth = Math.min(90, contentWidth)
+        const imgHeight = 60
+
+        try {
+          pdf.addImage(imageDataUrl, 'JPEG', imgX, imgY, imgWidth, imgHeight)
+          y += imgHeight + 4
+        } catch {
+          pdf.setFont('helvetica', 'italic')
+          pdf.setFontSize(10)
+          pdf.text('Não foi possível carregar a imagem no PDF.', margin, y)
+          y += 6
+        }
+      } else {
+        pdf.setFont('helvetica', 'italic')
+        pdf.setFontSize(10)
+        pdf.text('Imagem não disponível para este registro.', margin, y)
+        y += 6
+      }
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10)
+
+      drawText(
+        `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
+        margin,
+        y,
+        { maxWidth: contentWidth, lineHeight: 5 }
+      )
+      y += 5
+
+      drawText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, {
+        maxWidth: contentWidth,
+        lineHeight: 5,
+      })
+      y += 5
+
+      if (safeStr(photo.caption).trim()) {
+        const used = drawText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, {
+          maxWidth: contentWidth,
+          lineHeight: 5,
+        })
+        y += used
+      }
+
+      line(4)
+    }
+
+    async function addDiaryBlock(block) {
+      addPageIfNeeded(28)
+
+      pdf.setFillColor(245, 245, 245)
+      pdf.rect(margin, y, contentWidth, 8, 'F')
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(12)
+      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 2, y + 5.5)
+      y += 12
+
+      labelValue('Etapa', block.stage_name)
+      labelValue('Status atual', statusLabel(block.status))
+
+      if (block.started_at) {
+        labelValue('Início', formatDateTime(block.started_at))
+      }
+
+      if (block.finished_at) {
+        labelValue('Conclusão', formatDateTime(block.finished_at))
+      }
+
+      if (block.started_at && block.finished_at) {
+        labelValue('Duração', durationLabel(block.started_at, block.finished_at))
+      }
+
+      const relevantEvents = block.events.filter((event) => safeStr(event.text).trim())
+
+      if (relevantEvents.length > 0) {
+        addPageIfNeeded(10)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10.5)
+        pdf.text('Atividades registradas no dia', margin, y)
+        y += 6
+
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(10)
+
+        relevantEvents.forEach((event) => {
+          addPageIfNeeded(8)
+          const txt = `${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
+          const used = drawText(`• ${txt}`, margin + 2, y, {
+            maxWidth: contentWidth - 4,
+            lineHeight: 5,
+          })
+          y += used
+        })
+
+        line(2)
+      }
+
+      if (safeStr(block.notes).trim()) {
+        addPageIfNeeded(12)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10.5)
+        pdf.text('Observação da etapa', margin, y)
+        y += 6
+
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(10)
+        const used = drawText(block.notes, margin, y, {
+          maxWidth: contentWidth,
+          lineHeight: 5,
+        })
+        y += used + 2
+      }
+
+      if (block.photos.length > 0) {
+        addPageIfNeeded(10)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10.5)
+        pdf.text('Fotos registradas no dia', margin, y)
+        y += 7
+
+        for (const photo of block.photos) {
+          await addPhotoBlock(photo)
+        }
+      }
+
+      line(4)
+      pdf.setDrawColor(215)
+      pdf.line(margin, y, pageWidth - margin, y)
+      y += 6
+    }
+
+    function addSummaryCard(label, value) {
+      const cardWidth = (contentWidth - 6) / 2
+      const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
+      const cardY = y
+
+      pdf.setDrawColor(220)
+      pdf.rect(x, cardY, cardWidth, 16)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(9.5)
+      pdf.text(label, x + 3, cardY + 6)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(13)
+      pdf.text(safeStr(value), x + 3, cardY + 12)
+
+      summaryCardIndex += 1
+      if (summaryCardIndex % 2 === 0) {
+        y += 20
+      }
+    }
+
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(16)
+    pdf.text('DIÁRIO DE OBRA', margin, y)
+    y += 8
+
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(11)
+    labelValue('Obra', project.name || '-')
+    labelValue('Cliente', project.client_name || '-')
+    labelValue('Cidade', project.city || '-')
+    labelValue('Data do diário', formatDate(diaryDate))
+    labelValue('Responsável pela emissão', 'Denio Losi')
+
+    line(3)
+
+    sectionTitle('Resumo do dia')
+
+    let summaryCardIndex = 0
+    addSummaryCard('Unidades com atividade', diarySummary.moved_units)
+    addSummaryCard('Etapas iniciadas', diarySummary.started)
+    addSummaryCard('Etapas concluídas', diarySummary.finished)
+    addSummaryCard('Fotos registradas', diarySummary.total_photos)
+    if (summaryCardIndex % 2 !== 0) y += 20
+    addSummaryCard('Observações registradas', diarySummary.observations)
+    addSummaryCard('Registros do histórico', diarySummary.total_logs)
+    if (summaryCardIndex % 2 !== 0) y += 20
+
+    line(3)
+
+    sectionTitle(`Atividades da data ${formatDate(diaryDate)}`)
+
+    if (diaryBlocks.length === 0) {
+      pdf.setFont('helvetica', 'italic')
+      pdf.setFontSize(11)
+      pdf.text('Nenhuma movimentação encontrada para a data selecionada.', margin, y)
+      y += 8
+    } else {
+      for (const block of diaryBlocks) {
+        await addDiaryBlock(block)
+      }
+    }
+
+    sectionTitle('Resumo atualizado da obra')
+
+    labelValue('Total de unidades', projectSummary.total_units)
+    labelValue('Unidades pendentes', projectSummary.pending)
+    labelValue('Unidades em andamento', projectSummary.in_progress)
+    labelValue('Unidades concluídas', projectSummary.done)
+    labelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
+
+    addPageIfNeeded(26)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(10.5)
+    pdf.text('Gráfico simples de progresso', margin, y)
+    y += 8
+
+    const barX = margin
+    const barY = y
+    const barWidth = contentWidth
+    const barHeight = 10
+    const pct = Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0)))
+
+    pdf.setDrawColor(180)
+    pdf.rect(barX, barY, barWidth, barHeight)
+    pdf.setFillColor(70, 70, 70)
+    pdf.rect(barX, barY, (barWidth * pct) / 100, barHeight, 'F')
+    y += 15
+
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(10)
+    pdf.text(`${pct.toFixed(2)}% concluído`, margin, y)
+    y += 7
+
+    const statusTotal = Math.max(1, projectSummary.total_units)
+    const donePct = (projectSummary.done / statusTotal) * 100
+    const inProgressPct = (projectSummary.in_progress / statusTotal) * 100
+    const pendingPct = (projectSummary.pending / statusTotal) * 100
+
+    function drawMiniBar(label, percent) {
+      addPageIfNeeded(10)
+      pdf.setFont('helvetica', 'normal')
+      pdf.text(`${label}: ${percent.toFixed(1)}%`, margin, y)
+      y += 2
+      pdf.setDrawColor(180)
+      pdf.rect(margin, y, contentWidth, 6)
+      pdf.setFillColor(120, 120, 120)
+      pdf.rect(margin, y, (contentWidth * percent) / 100, 6, 'F')
+      y += 10
+    }
+
+    drawMiniBar('Concluídas', donePct)
+    drawMiniBar('Em andamento', inProgressPct)
+    drawMiniBar('Pendentes', pendingPct)
+
+    const fileName = `${safeStr(project.name || 'obra')
+      .replace(/[^\w\-]+/g, '_')
+      .replace(/_+/g, '_')}_diario_de_obra_${safeStr(diaryDate)}.pdf`
+
+    pdf.save(fileName)
+  }
+
+  async function generateScreenshotPdf() {
+    if (!reportRef.current || !project) return
+
+    const modeLabel =
+      mode === REPORT_MODE.diary
+        ? 'diario-de-obra'
+        : mode === REPORT_MODE.period
+        ? 'resumo-por-periodo'
+        : 'observacoes-e-pendencias'
+
+    const dateLabel =
+      mode === REPORT_MODE.diary
+        ? safeStr(diaryDate)
+        : `${safeStr(startDate)}_a_${safeStr(endDate)}`
+
+    const fileName = `${safeStr(project.name || 'obra')
+      .replace(/[^\w\-]+/g, '_')
+      .replace(/_+/g, '_')}_${modeLabel}_${dateLabel}.pdf`
+
+    const canvas = await html2canvas(reportRef.current, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+      windowWidth: reportRef.current.scrollWidth,
+    })
+
+    const imgData = canvas.toDataURL('image/jpeg', 0.95)
+
+    const pdf = new jsPDF('p', 'mm', 'a4')
+    const pageWidth = pdf.internal.pageSize.getWidth()
+    const pageHeight = pdf.internal.pageSize.getHeight()
+
+    const margin = 8
+    const usableWidth = pageWidth - margin * 2
+    const usableHeight = pageHeight - margin * 2
+
+    const imgWidth = usableWidth
+    const imgHeight = (canvas.height * imgWidth) / canvas.width
+
+    let heightLeft = imgHeight
+    let position = margin
+
+    pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
+    heightLeft -= usableHeight
+
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight + margin
+      pdf.addPage()
+      pdf.addImage(imgData, 'JPEG', margin, position, imgWidth, imgHeight)
+      heightLeft -= usableHeight
+    }
+
+    pdf.save(fileName)
+  }
+
+  async function exportCurrentReportToPdf() {
+    if (!project) return
+
+    setExportingPdf(true)
+    try {
+      if (mode === REPORT_MODE.diary) {
+        await generateDiaryPdf()
+      } else {
+        await generateScreenshotPdf()
+      }
     } catch (error) {
       console.error(error)
       alert(`Erro ao gerar PDF: ${error?.message || error}`)
@@ -887,16 +1381,16 @@ export default function ObraRelatoriosPage() {
                 Diário de obra — {formatDate(diaryDate)}
               </div>
               <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-                Relatório automático com base no histórico e nas fotos lançadas no dia.
+                Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.
               </div>
 
-              {diaryEventsByUnit.length === 0 ? (
+              {diaryBlocks.length === 0 ? (
                 <div style={{ color: '#666' }}>Nenhuma movimentação encontrada nesta data.</div>
               ) : (
                 <div style={{ display: 'grid', gap: 14 }}>
-                  {diaryEventsByUnit.map((block, blockIndex) => (
+                  {diaryBlocks.map((block) => (
                     <div
-                      key={block.unit?.id || blockIndex}
+                      key={block.unit_stage_id}
                       style={{
                         border: '1px solid #eee',
                         borderRadius: 14,
@@ -904,35 +1398,98 @@ export default function ObraRelatoriosPage() {
                         background: '#fafafa',
                       }}
                     >
-                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>
+                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
                         Unidade {safeStr(block.unit?.identifier) || '-'}
                       </div>
 
-                      <div style={{ display: 'grid', gap: 10 }}>
-                        {block.events.map((event, index) => (
-                          <div
-                            key={`${event.type}_${event.created_at}_${index}`}
-                            style={{
-                              border: '1px solid #eee',
-                              borderRadius: 12,
-                              padding: 12,
-                              background: '#fff',
-                            }}
-                          >
-                            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
-                              {formatDateTime(event.created_at)}
-                            </div>
-                            <div style={{ fontSize: 15, fontWeight: 800 }}>
-                              {event.stage_name} — {event.title}
-                            </div>
-                            {event.extra ? (
-                              <div style={{ fontSize: 13, color: '#444', marginTop: 6 }}>
-                                {event.extra}
-                              </div>
-                            ) : null}
-                          </div>
-                        ))}
+                      <div style={{ fontSize: 14, marginBottom: 6 }}>
+                        <b>Etapa:</b> {block.stage_name}
                       </div>
+
+                      <div style={{ fontSize: 14, marginBottom: 6 }}>
+                        <b>Status atual:</b> {statusLabel(block.status)}
+                      </div>
+
+                      {block.started_at ? (
+                        <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}>
+                          <b>Início:</b> {formatDateTime(block.started_at)}
+                        </div>
+                      ) : null}
+
+                      {block.finished_at ? (
+                        <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}>
+                          <b>Conclusão:</b> {formatDateTime(block.finished_at)}
+                        </div>
+                      ) : null}
+
+                      {block.started_at && block.finished_at ? (
+                        <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}>
+                          <b>Duração:</b> {durationLabel(block.started_at, block.finished_at)}
+                        </div>
+                      ) : null}
+
+                      {block.events.length > 0 ? (
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
+                            Atividades registradas no dia
+                          </div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            {block.events.map((event, index) => (
+                              <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
+                                • {formatTime(event.created_at)} — {event.text}
+                                {event.user_name ? ` (${event.user_name})` : ''}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {safeStr(block.notes).trim() ? (
+                        <div style={{ marginBottom: 12 }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
+                            Observação da etapa
+                          </div>
+                          <div style={{ fontSize: 13, color: '#444' }}>
+                            {block.notes}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {block.photos.length > 0 ? (
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>
+                            Fotos registradas no dia
+                          </div>
+                          <div style={{ display: 'grid', gap: 10 }}>
+                            {block.photos.map((photo) => (
+                              <div
+                                key={photo.id}
+                                style={{
+                                  border: '1px solid #eee',
+                                  borderRadius: 12,
+                                  padding: 10,
+                                  background: '#fff',
+                                }}
+                              >
+                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
+                                  {getPhotoKindLabel(photo.kind)}
+                                </div>
+                                <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
+                                  Postado por: <b>{photo.user_name || 'Usuário não identificado'}</b>
+                                </div>
+                                <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
+                                  Data/hora: <b>{formatDateTime(photo.created_at)}</b>
+                                </div>
+                                {safeStr(photo.caption).trim() ? (
+                                  <div style={{ fontSize: 12, color: '#555' }}>
+                                    Legenda: <b>{photo.caption}</b>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -1262,11 +1819,7 @@ export default function ObraRelatoriosPage() {
                     <tbody>
                       {filteredObservationRows.map((row) => {
                         const relatedLogs = logs
-                          .filter((log) => {
-                            const metadata = parseMaybeJson(log?.metadata)
-                            const unitStageId = log?.unit_stage_id || metadata?.unit_stage_id
-                            return unitStageId === row.id
-                          })
+                          .filter((log) => log.unit_stage_id === row.id)
                           .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 
                         const latestLog = relatedLogs[0] || null
