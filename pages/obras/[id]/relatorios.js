@@ -137,13 +137,8 @@ function durationLabel(startValue, endValue) {
   const totalHours = Math.floor(diffMs / (1000 * 60 * 60))
   const totalDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
 
-  if (totalDays >= 1) {
-    return `${totalDays} dia${totalDays > 1 ? 's' : ''}`
-  }
-
-  if (totalHours >= 1) {
-    return `${totalHours} hora${totalHours > 1 ? 's' : ''}`
-  }
+  if (totalDays >= 1) return `${totalDays} dia${totalDays > 1 ? 's' : ''}`
+  if (totalHours >= 1) return `${totalHours} hora${totalHours > 1 ? 's' : ''}`
 
   const totalMinutes = Math.max(1, Math.floor(diffMs / (1000 * 60)))
   return `${totalMinutes} minuto${totalMinutes > 1 ? 's' : ''}`
@@ -166,8 +161,7 @@ function loadImageAsDataUrl(url) {
         canvas.height = img.naturalHeight || img.height
         const ctx = canvas.getContext('2d')
         ctx.drawImage(img, 0, 0)
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
-        resolve(dataUrl)
+        resolve(canvas.toDataURL('image/jpeg', 0.92))
       } catch {
         resolve(null)
       }
@@ -412,9 +406,10 @@ export default function ObraRelatoriosPage() {
   }, [diaryDate])
 
   const periodRange = useMemo(() => {
-    const from = startOfDayIso(startDate)
-    const to = endOfDayIso(endDate)
-    return { from, to }
+    return {
+      from: startOfDayIso(startDate),
+      to: endOfDayIso(endDate),
+    }
   }, [startDate, endDate])
 
   function inRange(dateValue, from, to) {
@@ -481,7 +476,7 @@ export default function ObraRelatoriosPage() {
     return map
   }, [logs])
 
-  const diaryBlocks = useMemo(() => {
+  function buildBlocks(logRows, photoRows) {
     const relevantActions = new Set(['status_changed', 'notes_updated'])
     const blockMap = {}
 
@@ -513,7 +508,7 @@ export default function ObraRelatoriosPage() {
       return blockMap[unitStageId]
     }
 
-    diaryLogs.forEach((log) => {
+    logRows.forEach((log) => {
       if (!relevantActions.has(log.action)) return
       const block = ensureBlock(log.unit_stage_id)
       if (!block) return
@@ -524,11 +519,7 @@ export default function ObraRelatoriosPage() {
       if (log.action === 'notes_updated') {
         const newValue = parseMaybeJson(log?.new_value)
         const noteText = safeStr(newValue?.notes).trim()
-        if (noteText) {
-          description = `Observação atualizada: ${noteText}`
-        } else {
-          description = 'Observação removida'
-        }
+        description = noteText ? `Observação atualizada: ${noteText}` : 'Observação removida'
       }
 
       block.events.push({
@@ -542,24 +533,24 @@ export default function ObraRelatoriosPage() {
       })
     })
 
-    diaryPhotos.forEach((photo) => {
+    photoRows.forEach((photo) => {
       const block = ensureBlock(photo.unit_stage_id)
       if (!block) return
+      const userName =
+        safeStr(profilesMap[photo.user_id]?.full_name).trim() ||
+        safeStr(profilesMap[photo.user_id]?.email).trim() ||
+        ''
+
       block.photos.push({
         ...photo,
-        user_name:
-          safeStr(profilesMap[photo.user_id]?.full_name).trim() ||
-          safeStr(profilesMap[photo.user_id]?.email).trim() ||
-          '',
+        user_name: userName,
       })
+
       block.events.push({
         type: 'photo',
         created_at: photo.created_at,
         text: getPhotoKindLabel(photo.kind),
-        user_name:
-          safeStr(profilesMap[photo.user_id]?.full_name).trim() ||
-          safeStr(profilesMap[photo.user_id]?.email).trim() ||
-          '',
+        user_name: userName,
       })
     })
 
@@ -574,7 +565,10 @@ export default function ObraRelatoriosPage() {
         if (unitCmp !== 0) return unitCmp
         return safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')
       })
-  }, [diaryLogs, diaryPhotos, unitStagesById, unitsById, stagesById, stageTimelineByUnitStageId, profilesMap])
+  }
+
+  const diaryBlocks = useMemo(() => buildBlocks(diaryLogs, diaryPhotos), [diaryLogs, diaryPhotos, profilesMap, unitsById, stagesById, unitStagesById, stageTimelineByUnitStageId])
+  const periodBlocks = useMemo(() => buildBlocks(periodLogs, periodPhotos), [periodLogs, periodPhotos, profilesMap, unitsById, stagesById, unitStagesById, stageTimelineByUnitStageId])
 
   const diarySummary = useMemo(() => {
     const unitIds = new Set()
@@ -605,52 +599,29 @@ export default function ObraRelatoriosPage() {
 
   const periodSummary = useMemo(() => {
     const unitIds = new Set()
-    const stageCounters = {}
+    let started = 0
+    let finished = 0
+    let observations = 0
 
-    periodLogs.forEach((log) => {
-      const us = unitStagesById[log.unit_stage_id]
-      if (!us) return
-      if (us.unit_id) unitIds.add(us.unit_id)
-
-      const stage = stagesById[us.stage_id]
-      const stageName = safeStr(us.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa'
-      const key = `${us.stage_id}__${stageName}`
-
-      if (!stageCounters[key]) {
-        stageCounters[key] = {
-          stage_name: stageName,
-          started: 0,
-          finished: 0,
-          observations: 0,
-        }
-      }
-
-      if (log.action === 'status_changed') {
-        const fromStatus = oldStatusFromLog(log)
-        const toStatus = newStatusFromLog(log)
-        if (fromStatus === 'pending' && toStatus === 'in_progress') stageCounters[key].started += 1
-        if (toStatus === 'done') stageCounters[key].finished += 1
-      }
-
-      if (log.action === 'notes_updated') {
-        stageCounters[key].observations += 1
-      }
-    })
-
-    periodPhotos.forEach((photo) => {
-      const us = unitStagesById[photo.unit_stage_id]
-      if (us?.unit_id) unitIds.add(us.unit_id)
+    periodBlocks.forEach((block) => {
+      if (block.unit?.id) unitIds.add(block.unit.id)
+      block.events.forEach((event) => {
+        const text = safeStr(event.text).toLowerCase()
+        if (text.includes('etapa iniciada')) started += 1
+        if (text.includes('etapa concluída')) finished += 1
+        if (text.includes('observação')) observations += 1
+      })
     })
 
     return {
       moved_units: unitIds.size,
       total_logs: periodLogs.length,
       total_photos: periodPhotos.length,
-      stages: Object.values(stageCounters).sort((a, b) =>
-        safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')
-      ),
+      started,
+      finished,
+      observations,
     }
-  }, [periodLogs, periodPhotos, unitStagesById, stagesById])
+  }, [periodBlocks, periodLogs.length, periodPhotos.length])
 
   const lowestProgressUnits = useMemo(() => {
     return [...units]
@@ -780,13 +751,10 @@ export default function ObraRelatoriosPage() {
     }
   }
 
-  async function generateDiaryPdf() {
-    if (!project) return
-
+  async function createPdfHelper() {
     const pdf = new jsPDF('p', 'mm', 'a4')
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
-
     const margin = 12
     const contentWidth = pageWidth - margin * 2
     let y = margin
@@ -803,41 +771,45 @@ export default function ObraRelatoriosPage() {
       }
     }
 
-    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 6.2) {
+    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 7) {
       const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
       pdf.text(lines, x, topY, { baseline: 'top' })
       return lines.length * lineHeight
     }
 
     function sectionTitle(text) {
-      addPageIfNeeded(16)
+      addPageIfNeeded(18)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(13)
       pdf.text(text, margin, y)
-      y += 6
+      y += 7
       pdf.setDrawColor(190)
       pdf.line(margin, y, pageWidth - margin, y)
-      y += 6
+      y += 7
     }
 
     function labelValue(label, value) {
-      addPageIfNeeded(10)
+      addPageIfNeeded(11)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(`${label}:`, margin, y)
 
       pdf.setFont('helvetica', 'normal')
-      const used = drawWrappedText(safeStr(value) || '-', margin + 32, y - 1, contentWidth - 32, 6.2)
-      y += Math.max(7, used + 1)
+      const used = drawWrappedText(safeStr(value) || '-', margin + 32, y - 1, contentWidth - 32, 7)
+      y += Math.max(8, used + 1.5)
     }
 
     let summaryCardIndex = 0
+
+    function resetSummaryCardIndex() {
+      summaryCardIndex = 0
+    }
 
     function addSummaryCard(label, value) {
       const cardWidth = (contentWidth - 6) / 2
       const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
       const cardY = y
-      const cardHeight = 26
+      const cardHeight = 30
 
       pdf.setDrawColor(220)
       pdf.rect(x, cardY, cardWidth, cardHeight)
@@ -847,39 +819,36 @@ export default function ObraRelatoriosPage() {
       const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
       pdf.text(labelLines, x + 3, cardY + 5, { baseline: 'top' })
 
-      const labelHeight = labelLines.length * 4.8
+      const labelHeight = labelLines.length * 5
 
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(13)
-      pdf.text(safeStr(value), x + 3, cardY + 8 + labelHeight)
+      pdf.text(safeStr(value), x + 3, cardY + 10 + labelHeight)
 
       summaryCardIndex += 1
       if (summaryCardIndex % 2 === 0) {
-        y += cardHeight + 7
+        y += cardHeight + 8
       }
     }
 
     async function addPhotoBlock(photo) {
-      addPageIfNeeded(72)
+      addPageIfNeeded(76)
 
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(getPhotoKindLabel(photo.kind), margin, y)
-      y += 6
+      y += 7
 
       let signedUrl = null
       if (photo.path) {
         const { data, error } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(photo.path, 60 * 30)
-
-        if (!error && data?.signedUrl) {
-          signedUrl = data.signedUrl
-        }
+        if (!error && data?.signedUrl) signedUrl = data.signedUrl
       }
 
       const imageDataUrl = signedUrl ? await loadImageAsDataUrl(signedUrl) : null
 
       if (imageDataUrl) {
-        addPageIfNeeded(68)
+        addPageIfNeeded(70)
 
         const imgX = margin
         const imgY = y
@@ -888,62 +857,55 @@ export default function ObraRelatoriosPage() {
 
         try {
           pdf.addImage(imageDataUrl, 'JPEG', imgX, imgY, imgWidth, imgHeight)
-          y += imgHeight + 5
+          y += imgHeight + 6
         } catch {
           pdf.setFont('helvetica', 'italic')
           pdf.setFontSize(10)
           pdf.text('Não foi possível carregar a imagem no PDF.', margin, y)
-          y += 6
+          y += 7
         }
       } else {
         pdf.setFont('helvetica', 'italic')
         pdf.setFontSize(10)
         pdf.text('Imagem não disponível para este registro.', margin, y)
-        y += 6
+        y += 7
       }
 
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(10)
 
-      y +=
-        drawWrappedText(
-          `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
-          margin,
-          y,
-          contentWidth,
-          6.2
-        ) + 1
+      y += drawWrappedText(
+        `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
+        margin,
+        y,
+        contentWidth,
+        7
+      ) + 1.5
 
-      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 6.2) + 1
+      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 7) + 1.5
 
       if (safeStr(photo.caption).trim()) {
-        y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 6.2) + 1
+        y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 7) + 1.5
       }
 
-      y += 4
+      y += 5
     }
 
-    async function addDiaryBlock(block) {
-      addPageIfNeeded(34)
+    async function addBlock(block) {
+      addPageIfNeeded(38)
 
       pdf.setFillColor(245, 245, 245)
-      pdf.rect(margin, y, contentWidth, 9, 'F')
+      pdf.rect(margin, y, contentWidth, 10, 'F')
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(12)
-      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, y + 6)
-      y += 14
+      pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, y + 6.5)
+      y += 15
 
       labelValue('Etapa', block.stage_name)
       labelValue('Status atual', statusLabel(block.status))
 
-      if (block.started_at) {
-        labelValue('Início', formatDateTime(block.started_at))
-      }
-
-      if (block.finished_at) {
-        labelValue('Conclusão', formatDateTime(block.finished_at))
-      }
-
+      if (block.started_at) labelValue('Início', formatDateTime(block.started_at))
+      if (block.finished_at) labelValue('Conclusão', formatDateTime(block.finished_at))
       if (block.started_at && block.finished_at) {
         labelValue('Duração', durationLabel(block.started_at, block.finished_at))
       }
@@ -951,67 +913,67 @@ export default function ObraRelatoriosPage() {
       const relevantEvents = block.events.filter((event) => safeStr(event.text).trim())
 
       if (relevantEvents.length > 0) {
-        addPageIfNeeded(12)
+        addPageIfNeeded(13)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
-        pdf.text('Atividades registradas no dia', margin, y)
-        y += 7
+        pdf.text('Atividades registradas', margin, y)
+        y += 8
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
 
         relevantEvents.forEach((event) => {
-          addPageIfNeeded(8)
-          const txt = `${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 6.2) + 1
+          addPageIfNeeded(10)
+          const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
+          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 7) + 1.5
         })
 
         y += 2
       }
 
       if (safeStr(block.notes).trim()) {
-        addPageIfNeeded(14)
+        addPageIfNeeded(15)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
         pdf.text('Observação da etapa', margin, y)
-        y += 7
+        y += 8
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
-        y += drawWrappedText(block.notes, margin, y, contentWidth, 6.2) + 1
+        y += drawWrappedText(block.notes, margin, y, contentWidth, 7) + 1.5
         y += 2
       }
 
       if (block.photos.length > 0) {
-        addPageIfNeeded(12)
+        addPageIfNeeded(14)
         pdf.setFont('helvetica', 'bold')
         pdf.setFontSize(10.5)
-        pdf.text('Fotos registradas no dia', margin, y)
-        y += 8
+        pdf.text('Fotos registradas', margin, y)
+        y += 9
 
         for (const photo of block.photos) {
           await addPhotoBlock(photo)
         }
       }
 
-      y += 3
+      y += 4
       pdf.setDrawColor(215)
       pdf.line(margin, y, pageWidth - margin, y)
-      y += 8
+      y += 9
     }
 
     function drawBarChart(title, percent) {
-      addPageIfNeeded(26)
+      addPageIfNeeded(28)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(title, margin, y)
-      y += 6
+      y += 7
 
       pdf.setDrawColor(180)
       pdf.rect(margin, y, contentWidth, 7)
       pdf.setFillColor(90, 90, 90)
       pdf.rect(margin, y, (contentWidth * percent) / 100, 7, 'F')
-      y += 11
+      y += 12
 
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(10)
@@ -1019,25 +981,68 @@ export default function ObraRelatoriosPage() {
       y += 8
     }
 
-    if (logoDataUrl) {
-      try {
-        pdf.addImage(logoDataUrl, 'PNG', margin, y, 24, 24)
-      } catch {}
+    function addHeader(title, subtitle) {
+      if (logoDataUrl) {
+        try {
+          pdf.addImage(logoDataUrl, 'PNG', margin, y, 24, 24)
+        } catch {}
+      }
+
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(17)
+      pdf.text(title, logoDataUrl ? margin + 30 : margin, y + 8)
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10.5)
+      pdf.text(subtitle, logoDataUrl ? margin + 30 : margin, y + 15)
+
+      y += 30
+      pdf.setDrawColor(180)
+      pdf.line(margin, y, pageWidth - margin, y)
+      y += 8
     }
 
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(17)
-    pdf.text('DIÁRIO DE OBRA', logoDataUrl ? margin + 30 : margin, y + 8)
+    return {
+      pdf,
+      pageWidth,
+      pageHeight,
+      margin,
+      contentWidth,
+      getY: () => y,
+      setY: (v) => {
+        y = v
+      },
+      addPageIfNeeded,
+      drawWrappedText,
+      sectionTitle,
+      labelValue,
+      addSummaryCard,
+      resetSummaryCardIndex,
+      addPhotoBlock,
+      addBlock,
+      drawBarChart,
+      addHeader,
+    }
+  }
 
-    pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(10.5)
-    pdf.text('Relatório automático de acompanhamento da obra', logoDataUrl ? margin + 30 : margin, y + 15)
+  async function generateDiaryPdf() {
+    if (!project) return
 
-    y += 30
+    const helper = await createPdfHelper()
+    const {
+      pdf,
+      sectionTitle,
+      labelValue,
+      addSummaryCard,
+      resetSummaryCardIndex,
+      addBlock,
+      drawBarChart,
+      addHeader,
+      getY,
+      setY,
+    } = helper
 
-    pdf.setDrawColor(180)
-    pdf.line(margin, y, pageWidth - margin, y)
-    y += 8
+    addHeader('DIÁRIO DE OBRA', 'Relatório automático de acompanhamento da obra')
 
     labelValue('Obra', project.name || '-')
     labelValue('Cliente', project.client_name || '-')
@@ -1045,39 +1050,34 @@ export default function ObraRelatoriosPage() {
     labelValue('Data do diário', formatDate(diaryDate))
     labelValue('Responsável pela emissão', 'Denio Losi')
 
-    y += 3
+    setY(getY() + 3)
 
     sectionTitle('Resumo do dia')
 
-    summaryCardIndex = 0
+    resetSummaryCardIndex()
     addSummaryCard('Unidades com atividade', diarySummary.moved_units)
     addSummaryCard('Etapas iniciadas', diarySummary.started)
     addSummaryCard('Etapas concluídas', diarySummary.finished)
     addSummaryCard('Fotos registradas', diarySummary.total_photos)
 
-    if (summaryCardIndex % 2 !== 0) {
-      y += 33
-    }
+    if (getY() % 1 !== 0) setY(getY())
+    setY(getY() + 0)
 
     addSummaryCard('Observações registradas', diarySummary.observations)
     addSummaryCard('Registros do histórico', diarySummary.total_logs)
 
-    if (summaryCardIndex % 2 !== 0) {
-      y += 33
-    }
-
-    y += 4
+    setY(getY() + 4)
 
     sectionTitle(`Atividades da data ${formatDate(diaryDate)}`)
 
     if (diaryBlocks.length === 0) {
       pdf.setFont('helvetica', 'italic')
       pdf.setFontSize(11)
-      pdf.text('Nenhuma movimentação encontrada para a data selecionada.', margin, y)
-      y += 8
+      pdf.text('Nenhuma movimentação encontrada para a data selecionada.', helper.margin, getY())
+      setY(getY() + 8)
     } else {
       for (const block of diaryBlocks) {
-        await addDiaryBlock(block)
+        await addBlock(block)
       }
     }
 
@@ -1089,7 +1089,7 @@ export default function ObraRelatoriosPage() {
     labelValue('Unidades concluídas', projectSummary.done)
     labelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
 
-    y += 4
+    setY(getY() + 4)
 
     const statusTotal = Math.max(1, projectSummary.total_units)
     const avgPct = Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0)))
@@ -1102,10 +1102,185 @@ export default function ObraRelatoriosPage() {
     drawBarChart('Unidades em andamento', inProgressPct)
     drawBarChart('Unidades pendentes', pendingPct)
 
-    const fileName = `${safeStr(project.name || 'obra')
-      .replace(/[^\w\-]+/g, '_')
-      .replace(/_+/g, '_')}_diario_de_obra_${safeStr(diaryDate)}.pdf`
+    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_diario_de_obra_${safeStr(diaryDate)}.pdf`
+    pdf.save(fileName)
+  }
 
+  async function generatePeriodPdf() {
+    if (!project) return
+
+    const helper = await createPdfHelper()
+    const {
+      pdf,
+      sectionTitle,
+      labelValue,
+      addSummaryCard,
+      resetSummaryCardIndex,
+      addBlock,
+      addHeader,
+      getY,
+      setY,
+    } = helper
+
+    addHeader('RESUMO POR PERÍODO', 'Relatório cronológico consolidado por unidade')
+
+    labelValue('Obra', project.name || '-')
+    labelValue('Cliente', project.client_name || '-')
+    labelValue('Cidade', project.city || '-')
+    labelValue('Data inicial', formatDate(startDate))
+    labelValue('Data final', formatDate(endDate))
+    labelValue('Responsável pela emissão', 'Denio Losi')
+
+    setY(getY() + 3)
+
+    sectionTitle('Resumo do período')
+
+    resetSummaryCardIndex()
+    addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
+    addSummaryCard('Etapas iniciadas', periodSummary.started)
+    addSummaryCard('Etapas concluídas', periodSummary.finished)
+    addSummaryCard('Fotos registradas', periodSummary.total_photos)
+    addSummaryCard('Observações registradas', periodSummary.observations)
+    addSummaryCard('Registros do histórico', periodSummary.total_logs)
+
+    setY(getY() + 4)
+
+    sectionTitle(`Movimentações entre ${formatDate(startDate)} e ${formatDate(endDate)}`)
+
+    if (periodBlocks.length === 0) {
+      pdf.setFont('helvetica', 'italic')
+      pdf.setFontSize(11)
+      pdf.text('Nenhuma movimentação encontrada no período selecionado.', helper.margin, getY())
+      setY(getY() + 8)
+    } else {
+      for (const block of periodBlocks) {
+        await addBlock(block)
+      }
+    }
+
+    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_resumo_periodo_${safeStr(startDate)}_a_${safeStr(endDate)}.pdf`
+    pdf.save(fileName)
+  }
+
+  async function generateObservationsPdf() {
+    if (!project) return
+
+    const helper = await createPdfHelper()
+    const {
+      pdf,
+      sectionTitle,
+      labelValue,
+      addSummaryCard,
+      resetSummaryCardIndex,
+      addPageIfNeeded,
+      drawWrappedText,
+      addHeader,
+      getY,
+      setY,
+      margin,
+      contentWidth,
+      pageWidth,
+    } = helper
+
+    addHeader('OBSERVAÇÕES E PENDÊNCIAS', 'Relatório filtrado por status, etapa, unidade e período')
+
+    labelValue('Obra', project.name || '-')
+    labelValue('Cliente', project.client_name || '-')
+    labelValue('Cidade', project.city || '-')
+    labelValue('Período inicial', formatDate(startDate))
+    labelValue('Período final', formatDate(endDate))
+    labelValue('Status filtrado', statusFilter ? statusLabel(statusFilter) : 'Todos')
+    labelValue(
+      'Etapas filtradas',
+      stageFilter.length > 0
+        ? stages
+            .filter((s) => stageFilter.includes(s.id))
+            .map((s) => s.name)
+            .join(', ')
+        : 'Todas'
+    )
+    labelValue(
+      'Unidades filtradas',
+      unitFilter.length > 0
+        ? units
+            .filter((u) => unitFilter.includes(u.id))
+            .map((u) => u.identifier)
+            .join(', ')
+        : 'Todas'
+    )
+
+    if (safeStr(textFilter).trim()) {
+      labelValue('Busca textual', textFilter)
+    }
+
+    setY(getY() + 3)
+
+    sectionTitle('Resumo do relatório')
+
+    resetSummaryCardIndex()
+    addSummaryCard('Total filtrado', observationSummary.total)
+    addSummaryCard('Pendentes', observationSummary.pending)
+    addSummaryCard('Em andamento', observationSummary.in_progress)
+    addSummaryCard('Concluídas', observationSummary.done)
+    addSummaryCard('Com observação', observationSummary.with_notes)
+    addSummaryCard('Etapas selecionadas', stageFilter.length > 0 ? stageFilter.length : stages.length)
+
+    setY(getY() + 4)
+
+    sectionTitle('Itens encontrados')
+
+    if (filteredObservationRows.length === 0) {
+      pdf.setFont('helvetica', 'italic')
+      pdf.setFontSize(11)
+      pdf.text('Nenhum registro encontrado com os filtros selecionados.', margin, getY())
+      setY(getY() + 8)
+    } else {
+      filteredObservationRows.forEach((row) => {
+        addPageIfNeeded(28)
+
+        pdf.setFillColor(245, 245, 245)
+        pdf.rect(margin, getY(), contentWidth, 9, 'F')
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(12)
+        pdf.text(`Unidade ${safeStr(row.unit?.identifier) || '-'}`, margin + 3, getY() + 6.5)
+        setY(getY() + 14)
+
+        labelValue('Etapa', row.stage_display_name)
+        labelValue('Status', statusLabel(row.status))
+
+        const relatedLogs = logs
+          .filter((log) => log.unit_stage_id === row.id)
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+
+        const latestLog = relatedLogs[0] || null
+        labelValue('Última atualização', latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-')
+
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(10.5)
+        pdf.text('Observação', margin, getY())
+        setY(getY() + 8)
+
+        pdf.setFont('helvetica', 'normal')
+        pdf.setFontSize(10)
+        setY(
+          getY() +
+            drawWrappedText(
+              safeStr(row.notes).trim() || 'Sem observação',
+              margin,
+              getY(),
+              contentWidth,
+              7
+            ) +
+            2
+        )
+
+        pdf.setDrawColor(215)
+        pdf.line(margin, getY(), pageWidth - margin, getY())
+        setY(getY() + 9)
+      })
+    }
+
+    const fileName = `${safeStr(project.name || 'obra').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_')}_observacoes_pendencias_${safeStr(startDate)}_a_${safeStr(endDate)}.pdf`
     pdf.save(fileName)
   }
 
@@ -1172,6 +1347,10 @@ export default function ObraRelatoriosPage() {
     try {
       if (mode === REPORT_MODE.diary) {
         await generateDiaryPdf()
+      } else if (mode === REPORT_MODE.period) {
+        await generatePeriodPdf()
+      } else if (mode === REPORT_MODE.observations) {
+        await generateObservationsPdf()
       } else {
         await generateScreenshotPdf()
       }
@@ -1243,557 +1422,4 @@ export default function ObraRelatoriosPage() {
         <div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Relatórios da obra</div>
           <h1 style={{ margin: 0 }}>{project.name || '(Sem nome)'}</h1>
-          <div style={{ marginTop: 8, fontSize: 13, color: '#555' }}>
-            {project.client_name ? <b>{project.client_name}</b> : null}
-            {project.client_name && project.city ? ' • ' : null}
-            {project.city || ''}
-            {project.address ? ` • ${project.address}` : ''}
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            onClick={rerun}
-            disabled={running}
-            style={buttonStyle}
-            data-html2canvas-ignore="true"
-          >
-            {running ? 'Atualizando...' : 'Atualizar relatório'}
-          </button>
-
-          <button
-            type="button"
-            onClick={exportCurrentReportToPdf}
-            disabled={exportingPdf}
-            style={buttonStyle}
-            data-html2canvas-ignore="true"
-          >
-            {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
-          </button>
-
-          <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }} data-html2canvas-ignore="true">
-            ← Voltar para obra
-          </Link>
-        </div>
-      </div>
-
-      <hr style={{ margin: '18px 0' }} />
-
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }} data-html2canvas-ignore="true">
-        <button
-          type="button"
-          onClick={() => setMode(REPORT_MODE.diary)}
-          style={{
-            ...softButtonStyle,
-            background: mode === REPORT_MODE.diary ? '#111' : '#fff',
-            color: mode === REPORT_MODE.diary ? '#fff' : '#111',
-          }}
-        >
-          Diário de obra
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setMode(REPORT_MODE.period)}
-          style={{
-            ...softButtonStyle,
-            background: mode === REPORT_MODE.period ? '#111' : '#fff',
-            color: mode === REPORT_MODE.period ? '#fff' : '#111',
-          }}
-        >
-          Resumo por período
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setMode(REPORT_MODE.observations)}
-          style={{
-            ...softButtonStyle,
-            background: mode === REPORT_MODE.observations ? '#111' : '#fff',
-            color: mode === REPORT_MODE.observations ? '#fff' : '#111',
-          }}
-        >
-          Observações e pendências
-        </button>
-      </div>
-
-      <div ref={reportRef} style={{ background: '#fff', padding: 4 }}>
-        {mode === REPORT_MODE.diary ? (
-          <>
-            <div style={{ ...cardStyle, marginBottom: 18 }}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
-                  <input type="date" value={diaryDate} onChange={(e) => setDiaryDate(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div>
-              </div>
-            </div>
-
-            <div style={cardStyle}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Diário de obra — {formatDate(diaryDate)}</div>
-              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-                Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.
-              </div>
-
-              {diaryBlocks.length === 0 ? (
-                <div style={{ color: '#666' }}>Nenhuma movimentação encontrada nesta data.</div>
-              ) : (
-                <div style={{ display: 'grid', gap: 14 }}>
-                  {diaryBlocks.map((block) => (
-                    <div
-                      key={block.unit_stage_id}
-                      style={{
-                        border: '1px solid #eee',
-                        borderRadius: 14,
-                        padding: 14,
-                        background: '#fafafa',
-                      }}
-                    >
-                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
-
-                      <div style={{ fontSize: 14, marginBottom: 6 }}>
-                        <b>Etapa:</b> {block.stage_name}
-                      </div>
-
-                      <div style={{ fontSize: 14, marginBottom: 6 }}>
-                        <b>Status atual:</b> {statusLabel(block.status)}
-                      </div>
-
-                      {block.started_at ? (
-                        <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}>
-                          <b>Início:</b> {formatDateTime(block.started_at)}
-                        </div>
-                      ) : null}
-
-                      {block.finished_at ? (
-                        <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}>
-                          <b>Conclusão:</b> {formatDateTime(block.finished_at)}
-                        </div>
-                      ) : null}
-
-                      {block.started_at && block.finished_at ? (
-                        <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}>
-                          <b>Duração:</b> {durationLabel(block.started_at, block.finished_at)}
-                        </div>
-                      ) : null}
-
-                      {block.events.length > 0 ? (
-                        <div style={{ marginBottom: 10 }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades registradas no dia</div>
-                          <div style={{ display: 'grid', gap: 6 }}>
-                            {block.events.map((event, index) => (
-                              <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
-                                • {formatTime(event.created_at)} — {event.text}
-                                {event.user_name ? ` (${event.user_name})` : ''}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {safeStr(block.notes).trim() ? (
-                        <div style={{ marginBottom: 12 }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div>
-                          <div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div>
-                        </div>
-                      ) : null}
-
-                      {block.photos.length > 0 ? (
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Fotos registradas no dia</div>
-                          <div style={{ display: 'grid', gap: 10 }}>
-                            {block.photos.map((photo) => (
-                              <div
-                                key={photo.id}
-                                style={{
-                                  border: '1px solid #eee',
-                                  borderRadius: 12,
-                                  padding: 10,
-                                  background: '#fff',
-                                }}
-                              >
-                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{getPhotoKindLabel(photo.kind)}</div>
-                                <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
-                                  Postado por: <b>{photo.user_name || 'Usuário não identificado'}</b>
-                                </div>
-                                <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
-                                  Data/hora: <b>{formatDateTime(photo.created_at)}</b>
-                                </div>
-                                {safeStr(photo.caption).trim() ? (
-                                  <div style={{ fontSize: 12, color: '#555' }}>
-                                    Legenda: <b>{photo.caption}</b>
-                                  </div>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        ) : null}
-
-        {mode === REPORT_MODE.period ? (
-          <>
-            <div style={{ ...cardStyle, marginBottom: 18 }}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Registros no período</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div>
-              </div>
-            </div>
-
-            <div style={{ ...cardStyle, marginBottom: 18 }}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-                Resumo do período — {formatDate(startDate)} até {formatDate(endDate)}
-              </div>
-              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-                Consolidado automático de atividades, movimentações e produção por etapa.
-              </div>
-
-              {periodSummary.stages.length === 0 ? (
-                <div style={{ color: '#666' }}>Nenhuma movimentação encontrada no período selecionado.</div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-                    <thead>
-                      <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
-                        <th style={{ padding: '10px 8px' }}>Etapa</th>
-                        <th style={{ padding: '10px 8px' }}>Iniciadas</th>
-                        <th style={{ padding: '10px 8px' }}>Concluídas</th>
-                        <th style={{ padding: '10px 8px' }}>Observações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {periodSummary.stages.map((row, index) => (
-                        <tr key={`${row.stage_name}_${index}`} style={{ borderBottom: '1px solid #f1f1f1' }}>
-                          <td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.stage_name}</td>
-                          <td style={{ padding: '10px 8px' }}>{row.started}</td>
-                          <td style={{ padding: '10px 8px' }}>{row.finished}</td>
-                          <td style={{ padding: '10px 8px' }}>{row.observations}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div style={cardStyle}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Unidades com menor progresso</div>
-              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-                Apoio rápido para identificar gargalos e frentes atrasadas.
-              </div>
-
-              {lowestProgressUnits.length === 0 ? (
-                <div style={{ color: '#666' }}>Nenhuma unidade encontrada.</div>
-              ) : (
-                <div style={{ display: 'grid', gap: 10 }}>
-                  {lowestProgressUnits.map((unit) => (
-                    <div
-                      key={unit.id}
-                      style={{
-                        border: '1px solid #eee',
-                        borderRadius: 12,
-                        padding: 12,
-                        background: '#fafafa',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        gap: 12,
-                        flexWrap: 'wrap',
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontSize: 15, fontWeight: 900 }}>Unidade {unit.identifier || '-'}</div>
-                        <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
-                          Status da unidade: <b>{statusLabel(unit.status)}</b>
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: 12, color: '#666' }}>Progresso</div>
-                        <div style={{ fontSize: 24, fontWeight: 900 }}>{Number(unit.progress || 0).toFixed(2)}%</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        ) : null}
-
-        {mode === REPORT_MODE.observations ? (
-          <>
-            <div style={{ ...cardStyle, marginBottom: 18 }}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
-                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
-                    <option value="">Todos</option>
-                    <option value="pending">Pendente</option>
-                    <option value="in_progress">Em andamento</option>
-                    <option value="done">Concluída</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
-                  <input
-                    type="text"
-                    value={textFilter}
-                    onChange={(e) => setTextFilter(e.target.value)}
-                    placeholder="Buscar por unidade, etapa, observação..."
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-                  <input
-                    type="checkbox"
-                    checked={onlyWithObservation}
-                    onChange={(e) => setOnlyWithObservation(e.target.checked)}
-                  />
-                  Mostrar somente etapas com observação
-                </label>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
-                  <div
-                    style={{
-                      border: '1px solid #eee',
-                      borderRadius: 12,
-                      padding: 10,
-                      background: '#fafafa',
-                      maxHeight: 220,
-                      overflowY: 'auto',
-                      display: 'grid',
-                      gap: 8,
-                    }}
-                  >
-                    {units.length === 0 ? (
-                      <div style={{ color: '#666', fontSize: 13 }}>Nenhuma unidade.</div>
-                    ) : (
-                      units.map((unit) => (
-                        <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                          <input
-                            type="checkbox"
-                            checked={unitFilter.includes(unit.id)}
-                            onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)}
-                          />
-                          Unidade {unit.identifier || '-'}
-                        </label>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por etapas</div>
-                  <div
-                    style={{
-                      border: '1px solid #eee',
-                      borderRadius: 12,
-                      padding: 10,
-                      background: '#fafafa',
-                      maxHeight: 220,
-                      overflowY: 'auto',
-                      display: 'grid',
-                      gap: 8,
-                    }}
-                  >
-                    {stages.length === 0 ? (
-                      <div style={{ color: '#666', fontSize: 13 }}>Nenhuma etapa.</div>
-                    ) : (
-                      stages.map((stage) => (
-                        <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                          <input
-                            type="checkbox"
-                            checked={stageFilter.includes(stage.id)}
-                            onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)}
-                          />
-                          {stage.name || '-'}
-                        </label>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStatusFilter('')
-                    setUnitFilter([])
-                    setStageFilter([])
-                    setTextFilter('')
-                    setOnlyWithObservation(true)
-                    setStartDate(today)
-                    setEndDate(today)
-                  }}
-                  style={softButtonStyle}
-                >
-                  Limpar filtros
-                </button>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Pendentes</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Em andamento</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Concluídas</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div>
-              </div>
-              <div style={cardStyle}>
-                <div style={{ fontSize: 12, color: '#666' }}>Com observação</div>
-                <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div>
-              </div>
-            </div>
-
-            <div style={cardStyle}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Observações e pendências</div>
-              <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-                Relatório filtrável por status, unidade, etapa, período e texto.
-              </div>
-
-              {filteredObservationRows.length === 0 ? (
-                <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
-                    <thead>
-                      <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
-                        <th style={{ padding: '10px 8px' }}>Unidade</th>
-                        <th style={{ padding: '10px 8px' }}>Etapa</th>
-                        <th style={{ padding: '10px 8px' }}>Status</th>
-                        <th style={{ padding: '10px 8px' }}>Observação</th>
-                        <th style={{ padding: '10px 8px' }}>Última atualização</th>
-                        <th style={{ padding: '10px 8px' }}>Abrir</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredObservationRows.map((row) => {
-                        const relatedLogs = logs
-                          .filter((log) => log.unit_stage_id === row.id)
-                          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-
-                        const latestLog = relatedLogs[0] || null
-
-                        return (
-                          <tr key={row.id} style={{ borderBottom: '1px solid #f1f1f1', verticalAlign: 'top' }}>
-                            <td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.unit?.identifier || '-'}</td>
-                            <td style={{ padding: '10px 8px' }}>{row.stage_display_name}</td>
-                            <td style={{ padding: '10px 8px' }}>{statusLabel(row.status)}</td>
-                            <td style={{ padding: '10px 8px', maxWidth: 420 }}>
-                              {safeStr(row.notes).trim() || <span style={{ color: '#999' }}>Sem observação</span>}
-                            </td>
-                            <td style={{ padding: '10px 8px' }}>
-                              {latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-'}
-                            </td>
-                            <td style={{ padding: '10px 8px' }}>
-                              <Link href={`/unidades/${row.unit_id}`} style={{ textDecoration: 'none' }}>
-                                Abrir unidade
-                              </Link>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </>
-        ) : null}
-      </div>
-    </div>
-  )
-}
+         
