@@ -176,6 +176,22 @@ function getPhotoKindLabel(kind) {
   return kind || 'Foto'
 }
 
+function reportFileName(projectName, reportName) {
+  const safeProject = safeStr(projectName)
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '_')
+    .toLowerCase()
+
+  const safeReport = safeStr(reportName)
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '_')
+    .toLowerCase()
+
+  const date = new Date().toISOString().slice(0,10)
+
+  return `${safeProject}_${safeReport}_${date}.pdf`
+}
+
 function buildPdf(title, subtitle) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const pageWidth = pdf.internal.pageSize.getWidth()
