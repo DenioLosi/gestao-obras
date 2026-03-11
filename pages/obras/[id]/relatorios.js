@@ -18,10 +18,6 @@ const STATUS_LABEL = {
 }
 
 const PHOTO_BUCKET = 'unit-stage-photos'
-
-// Se depois quiser adicionar logo fixa hospedada no projeto,
-// basta colocar a URL aqui, por exemplo:
-// const REPORT_LOGO_URL = '/logo.png'
 const REPORT_LOGO_URL = ''
 
 function safeStr(v) {
@@ -261,13 +257,7 @@ export default function ObraRelatoriosPage() {
 
     setProject(projectRow)
 
-    const [
-      unitsRes,
-      stagesRes,
-      unitStagesRes,
-      photosRes,
-      logsRes,
-    ] = await Promise.all([
+    const [unitsRes, stagesRes, unitStagesRes, photosRes, logsRes] = await Promise.all([
       supabase
         .from('units')
         .select('id, project_id, identifier, status, progress, is_active')
@@ -345,10 +335,7 @@ export default function ObraRelatoriosPage() {
     const logsRows = logsRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
 
     const userIds = Array.from(
-      new Set(
-        [...photosRows.map((x) => x.user_id), ...logsRows.map((x) => x.user_id)]
-          .filter(Boolean)
-      )
+      new Set([...photosRows.map((x) => x.user_id), ...logsRows.map((x) => x.user_id)].filter(Boolean))
     )
 
     let nextProfilesMap = {}
@@ -816,9 +803,9 @@ export default function ObraRelatoriosPage() {
       }
     }
 
-    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 5) {
+    function drawWrappedText(text, x, topY, maxWidth, lineHeight = 6.2) {
       const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
-      pdf.text(lines, x, topY)
+      pdf.text(lines, x, topY, { baseline: 'top' })
       return lines.length * lineHeight
     }
 
@@ -834,20 +821,23 @@ export default function ObraRelatoriosPage() {
     }
 
     function labelValue(label, value) {
-      addPageIfNeeded(8)
+      addPageIfNeeded(10)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(`${label}:`, margin, y)
+
       pdf.setFont('helvetica', 'normal')
-      const used = drawWrappedText(safeStr(value) || '-', margin + 32, y, contentWidth - 32, 5)
-      y += Math.max(6, used)
+      const used = drawWrappedText(safeStr(value) || '-', margin + 32, y - 1, contentWidth - 32, 6.2)
+      y += Math.max(7, used + 1)
     }
+
+    let summaryCardIndex = 0
 
     function addSummaryCard(label, value) {
       const cardWidth = (contentWidth - 6) / 2
       const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
       const cardY = y
-      const cardHeight = 22
+      const cardHeight = 26
 
       pdf.setDrawColor(220)
       pdf.rect(x, cardY, cardWidth, cardHeight)
@@ -855,9 +845,9 @@ export default function ObraRelatoriosPage() {
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(9)
       const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
-      pdf.text(labelLines, x + 3, cardY + 6)
+      pdf.text(labelLines, x + 3, cardY + 5, { baseline: 'top' })
 
-      const labelHeight = labelLines.length * 4
+      const labelHeight = labelLines.length * 4.8
 
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(13)
@@ -865,7 +855,7 @@ export default function ObraRelatoriosPage() {
 
       summaryCardIndex += 1
       if (summaryCardIndex % 2 === 0) {
-        y += cardHeight + 6
+        y += cardHeight + 7
       }
     }
 
@@ -879,9 +869,7 @@ export default function ObraRelatoriosPage() {
 
       let signedUrl = null
       if (photo.path) {
-        const { data, error } = await supabase.storage
-          .from(PHOTO_BUCKET)
-          .createSignedUrl(photo.path, 60 * 30)
+        const { data, error } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(photo.path, 60 * 30)
 
         if (!error && data?.signedUrl) {
           signedUrl = data.signedUrl
@@ -917,18 +905,19 @@ export default function ObraRelatoriosPage() {
       pdf.setFont('helvetica', 'normal')
       pdf.setFontSize(10)
 
-      y += drawWrappedText(
-        `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
-        margin,
-        y,
-        contentWidth,
-        5
-      )
+      y +=
+        drawWrappedText(
+          `Postado por: ${safeStr(photo.user_name).trim() || 'Usuário não identificado'}`,
+          margin,
+          y,
+          contentWidth,
+          6.2
+        ) + 1
 
-      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 5)
+      y += drawWrappedText(`Data/hora: ${formatDateTime(photo.created_at)}`, margin, y, contentWidth, 6.2) + 1
 
       if (safeStr(photo.caption).trim()) {
-        y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 5)
+        y += drawWrappedText(`Legenda: ${safeStr(photo.caption).trim()}`, margin, y, contentWidth, 6.2) + 1
       }
 
       y += 4
@@ -974,7 +963,7 @@ export default function ObraRelatoriosPage() {
         relevantEvents.forEach((event) => {
           addPageIfNeeded(8)
           const txt = `${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 5)
+          y += drawWrappedText(`• ${txt}`, margin + 2, y, contentWidth - 2, 6.2) + 1
         })
 
         y += 2
@@ -989,7 +978,7 @@ export default function ObraRelatoriosPage() {
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(10)
-        y += drawWrappedText(block.notes, margin, y, contentWidth, 5)
+        y += drawWrappedText(block.notes, margin, y, contentWidth, 6.2) + 1
         y += 2
       }
 
@@ -1012,7 +1001,7 @@ export default function ObraRelatoriosPage() {
     }
 
     function drawBarChart(title, percent) {
-      addPageIfNeeded(22)
+      addPageIfNeeded(26)
       pdf.setFont('helvetica', 'bold')
       pdf.setFontSize(10.5)
       pdf.text(title, margin, y)
@@ -1060,21 +1049,21 @@ export default function ObraRelatoriosPage() {
 
     sectionTitle('Resumo do dia')
 
-    let summaryCardIndex = 0
+    summaryCardIndex = 0
     addSummaryCard('Unidades com atividade', diarySummary.moved_units)
     addSummaryCard('Etapas iniciadas', diarySummary.started)
     addSummaryCard('Etapas concluídas', diarySummary.finished)
     addSummaryCard('Fotos registradas', diarySummary.total_photos)
 
     if (summaryCardIndex % 2 !== 0) {
-      y += 28
+      y += 33
     }
 
     addSummaryCard('Observações registradas', diarySummary.observations)
     addSummaryCard('Registros do histórico', diarySummary.total_logs)
 
     if (summaryCardIndex % 2 !== 0) {
-      y += 28
+      y += 33
     }
 
     y += 4
@@ -1283,11 +1272,7 @@ export default function ObraRelatoriosPage() {
             {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
           </button>
 
-          <Link
-            href={`/obras/${project.id}`}
-            style={{ textDecoration: 'none' }}
-            data-html2canvas-ignore="true"
-          >
+          <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }} data-html2canvas-ignore="true">
             ← Voltar para obra
           </Link>
         </div>
@@ -1342,12 +1327,7 @@ export default function ObraRelatoriosPage() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                 <div>
                   <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
-                  <input
-                    type="date"
-                    value={diaryDate}
-                    onChange={(e) => setDiaryDate(e.target.value)}
-                    style={inputStyle}
-                  />
+                  <input type="date" value={diaryDate} onChange={(e) => setDiaryDate(e.target.value)} style={inputStyle} />
                 </div>
               </div>
             </div>
@@ -1380,9 +1360,7 @@ export default function ObraRelatoriosPage() {
             </div>
 
             <div style={cardStyle}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-                Diário de obra — {formatDate(diaryDate)}
-              </div>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Diário de obra — {formatDate(diaryDate)}</div>
               <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
                 Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.
               </div>
@@ -1401,9 +1379,7 @@ export default function ObraRelatoriosPage() {
                         background: '#fafafa',
                       }}
                     >
-                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
-                        Unidade {safeStr(block.unit?.identifier) || '-'}
-                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
 
                       <div style={{ fontSize: 14, marginBottom: 6 }}>
                         <b>Etapa:</b> {block.stage_name}
@@ -1433,9 +1409,7 @@ export default function ObraRelatoriosPage() {
 
                       {block.events.length > 0 ? (
                         <div style={{ marginBottom: 10 }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-                            Atividades registradas no dia
-                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades registradas no dia</div>
                           <div style={{ display: 'grid', gap: 6 }}>
                             {block.events.map((event, index) => (
                               <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
@@ -1449,20 +1423,14 @@ export default function ObraRelatoriosPage() {
 
                       {safeStr(block.notes).trim() ? (
                         <div style={{ marginBottom: 12 }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-                            Observação da etapa
-                          </div>
-                          <div style={{ fontSize: 13, color: '#444' }}>
-                            {block.notes}
-                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div>
+                          <div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div>
                         </div>
                       ) : null}
 
                       {block.photos.length > 0 ? (
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>
-                            Fotos registradas no dia
-                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Fotos registradas no dia</div>
                           <div style={{ display: 'grid', gap: 10 }}>
                             {block.photos.map((photo) => (
                               <div
@@ -1474,9 +1442,7 @@ export default function ObraRelatoriosPage() {
                                   background: '#fff',
                                 }}
                               >
-                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
-                                  {getPhotoKindLabel(photo.kind)}
-                                </div>
+                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{getPhotoKindLabel(photo.kind)}</div>
                                 <div style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
                                   Postado por: <b>{photo.user_name || 'Usuário não identificado'}</b>
                                 </div>
@@ -1509,22 +1475,12 @@ export default function ObraRelatoriosPage() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
                 <div>
                   <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    style={inputStyle}
-                  />
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
                 </div>
 
                 <div>
                   <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    style={inputStyle}
-                  />
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
                 </div>
               </div>
             </div>
@@ -1585,9 +1541,7 @@ export default function ObraRelatoriosPage() {
             </div>
 
             <div style={cardStyle}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-                Unidades com menor progresso
-              </div>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Unidades com menor progresso</div>
               <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
                 Apoio rápido para identificar gargalos e frentes atrasadas.
               </div>
@@ -1632,29 +1586,17 @@ export default function ObraRelatoriosPage() {
         {mode === REPORT_MODE.observations ? (
           <>
             <div style={{ ...cardStyle, marginBottom: 18 }}>
-              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>
-                Filtros de observações e pendências
-              </div>
+              <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
                 <div>
                   <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    style={inputStyle}
-                  />
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
                 </div>
 
                 <div>
                   <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    style={inputStyle}
-                  />
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
                 </div>
 
                 <div>
@@ -1797,9 +1739,7 @@ export default function ObraRelatoriosPage() {
             </div>
 
             <div style={cardStyle}>
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-                Observações e pendências
-              </div>
+              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Observações e pendências</div>
               <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
                 Relatório filtrável por status, unidade, etapa, período e texto.
               </div>
@@ -1829,9 +1769,7 @@ export default function ObraRelatoriosPage() {
 
                         return (
                           <tr key={row.id} style={{ borderBottom: '1px solid #f1f1f1', verticalAlign: 'top' }}>
-                            <td style={{ padding: '10px 8px', fontWeight: 700 }}>
-                              {row.unit?.identifier || '-'}
-                            </td>
+                            <td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.unit?.identifier || '-'}</td>
                             <td style={{ padding: '10px 8px' }}>{row.stage_display_name}</td>
                             <td style={{ padding: '10px 8px' }}>{statusLabel(row.status)}</td>
                             <td style={{ padding: '10px 8px', maxWidth: 420 }}>
