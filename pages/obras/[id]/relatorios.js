@@ -157,6 +157,25 @@ function buildMap(rows) {
   return out
 }
 
+function collectUserName(profilesMap, userId) {
+  return (
+    safeStr(profilesMap?.[userId]?.full_name).trim() ||
+    safeStr(profilesMap?.[userId]?.email).trim() ||
+    ''
+  )
+}
+
+function getPhotoKindLabel(kind) {
+  const k = safeStr(kind).toLowerCase()
+  if (k === 'before') return 'Foto antes'
+  if (k === 'after') return 'Foto depois'
+  if (k === 'progress') return 'Foto de andamento'
+  if (k === 'completion') return 'Foto de conclusão'
+  if (k === 'issue') return 'Foto de pendência'
+  if (k === 'image') return 'Foto'
+  return kind || 'Foto'
+}
+
 function buildPdf(title, subtitle) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const pageWidth = pdf.internal.pageSize.getWidth()
