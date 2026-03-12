@@ -241,7 +241,7 @@ async function buildPdf(title, subtitle) {
     }
   }
 
-function drawWrappedText(text, x, topY, maxWidth, lineHeight = 8.2) {
+function drawWrappedText(text, x, topY, maxWidth, lineHeight = 9.2) {
   const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
   pdf.text(lines, x, topY, { baseline: 'top' })
   return lines.length * lineHeight
@@ -268,20 +268,21 @@ function drawWrappedText(text, x, topY, maxWidth, lineHeight = 8.2) {
     y += Math.max(8, used + 2)
   }
 
-  let summaryCardIndex = 0
+let summaryCardIndex = 0
+const summaryCardHeight = 18
+const summaryCardGap = 4
 
-  function resetSummaryCards() {
-    summaryCardIndex = 0
-  }
+function resetSummaryCards() {
+  summaryCardIndex = 0
+}
 
 function addSummaryCard(label, value) {
   const cardWidth = (contentWidth - 6) / 2
   const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
   const cardY = y
-  const cardHeight = 18
 
   pdf.setDrawColor(220)
-  pdf.rect(x, cardY, cardWidth, cardHeight)
+  pdf.rect(x, cardY, cardWidth, summaryCardHeight)
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(8)
@@ -294,7 +295,13 @@ function addSummaryCard(label, value) {
 
   summaryCardIndex += 1
   if (summaryCardIndex % 2 === 0) {
-    y += cardHeight + 4
+    y += summaryCardHeight + summaryCardGap
+  }
+}
+
+function finishSummaryCards() {
+  if (summaryCardIndex % 2 !== 0) {
+    y += summaryCardHeight + summaryCardGap
   }
 }
 
@@ -357,6 +364,7 @@ function drawBarChart(titleText, percent) {
     labelValue,
     resetSummaryCards,
     addSummaryCard,
+    finishSummaryCards,
     addDivider,
     drawBarChart,
   }
@@ -877,17 +885,18 @@ export default function ObraRelatoriosPage() {
     setY(getY() + 3)
 
     sectionTitle('Resumo do dia')
-    resetSummaryCards()
-    addSummaryCard('Unidades com atividade', diarySummary.moved_units)
-    addSummaryCard('Etapas iniciadas', diarySummary.started)
-    addSummaryCard('Etapas concluídas', diarySummary.finished)
-    addSummaryCard('Fotos registradas', diarySummary.total_photos)
-    setY(getY() + 18)
-    addSummaryCard('Observações registradas', diarySummary.observations)
-    addSummaryCard('Registros do histórico', diarySummary.total_logs)
-    setY(getY() + 18)
+resetSummaryCards()
+addSummaryCard('Unidades com atividade', diarySummary.moved_units)
+addSummaryCard('Etapas iniciadas', diarySummary.started)
+addSummaryCard('Etapas concluídas', diarySummary.finished)
+addSummaryCard('Fotos registradas', diarySummary.total_photos)
+addSummaryCard('Observações registradas', diarySummary.observations)
+addSummaryCard('Registros do histórico', diarySummary.total_logs)
+finishSummaryCards()
+setY(getY() + 6)
 
-    sectionTitle(`Atividades da data ${formatDate(diaryDate)}`)
+
+    sectionTitle(`Atividades da data ${formatDate(`${diaryDate}T12:00:00`)}`)
 
     if (diaryBlocks.length === 0) {
       pdf.setFont('helvetica', 'italic')
@@ -921,7 +930,7 @@ export default function ObraRelatoriosPage() {
           setY(getY() + 8)
 
           pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(10)
+          pdf.setFontSize(9)
 
           block.events.forEach((event) => {
             addPageIfNeeded(10)
@@ -940,7 +949,7 @@ export default function ObraRelatoriosPage() {
           setY(getY() + 8)
 
           pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(10)
+          pdf.setFontSize(9)
           setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 7.2) + 2)
         }
 
@@ -962,7 +971,7 @@ export default function ObraRelatoriosPage() {
             if (imageDataUrl) {
               addPageIfNeeded(74)
               pdf.setFont('helvetica', 'bold')
-              pdf.setFontSize(10)
+              pdf.setFontSize(9)
               pdf.text(getPhotoKindLabel(photo.kind), margin, getY())
               setY(getY() + 6)
 
@@ -1034,12 +1043,13 @@ export default function ObraRelatoriosPage() {
     setY(getY() + 3)
 
     sectionTitle('Resumo do período')
-    resetSummaryCards()
-    addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
-    addSummaryCard('Registros no período', periodSummary.total_logs)
-    addSummaryCard('Fotos no período', periodSummary.total_photos)
-    addSummaryCard('Total de unidades', units.length)
-    setY(getY() + 18)
+resetSummaryCards()
+addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
+addSummaryCard('Registros no período', periodSummary.total_logs)
+addSummaryCard('Fotos no período', periodSummary.total_photos)
+addSummaryCard('Total de unidades', units.length)
+finishSummaryCards()
+setY(getY() + 6)
 
     sectionTitle(`Atividades do período ${formatDate(startDate)} até ${formatDate(endDate)}`)
 
@@ -1075,7 +1085,7 @@ export default function ObraRelatoriosPage() {
           setY(getY() + 8)
 
           pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(10)
+          pdf.setFontSize(9)
 
           block.events.forEach((event) => {
             addPageIfNeeded(10)
@@ -1094,7 +1104,7 @@ export default function ObraRelatoriosPage() {
           setY(getY() + 8)
 
           pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(10)
+          pdf.setFontSize(9)
           setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 7.2) + 2)
         }
 
@@ -1159,14 +1169,14 @@ export default function ObraRelatoriosPage() {
     setY(getY() + 3)
 
     sectionTitle('Resumo do relatório')
-    resetSummaryCards()
-    addSummaryCard('Total filtrado', observationSummary.total)
-    addSummaryCard('Pendentes', observationSummary.pending)
-    addSummaryCard('Em andamento', observationSummary.in_progress)
-    addSummaryCard('Concluídas', observationSummary.done)
-    setY(getY() + 18)
-    addSummaryCard('Com observação', observationSummary.with_notes)
-    setY(getY() + 18)
+resetSummaryCards()
+addSummaryCard('Total filtrado', observationSummary.total)
+addSummaryCard('Pendentes', observationSummary.pending)
+addSummaryCard('Em andamento', observationSummary.in_progress)
+addSummaryCard('Concluídas', observationSummary.done)
+addSummaryCard('Com observação', observationSummary.with_notes)
+finishSummaryCards()
+setY(getY() + 6)
 
     sectionTitle('Itens encontrados')
 
@@ -1203,7 +1213,7 @@ export default function ObraRelatoriosPage() {
         setY(getY() + 8)
 
         pdf.setFont('helvetica', 'normal')
-        pdf.setFontSize(10)
+        pdf.setFontSize(9)
         setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 7.2) + 2)
 
         setY(getY() + 3)
