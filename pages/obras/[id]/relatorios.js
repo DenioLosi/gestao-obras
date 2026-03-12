@@ -130,7 +130,6 @@ function actionToHuman(log) {
     if (fromStatus === 'pending' && toStatus === 'in_progress') return 'Etapa iniciada'
     if (fromStatus === 'in_progress' && toStatus === 'done') return 'Etapa concluída'
     if (fromStatus === 'pending' && toStatus === 'done') return 'Etapa concluída'
-
     return `Status alterado de ${statusLabel(fromStatus)} para ${statusLabel(toStatus)}`
   }
 
@@ -149,6 +148,7 @@ function durationLabel(startValue, endValue) {
   if (!startValue || !endValue) return ''
   const start = new Date(startValue).getTime()
   const end = new Date(endValue).getTime()
+
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return ''
 
   const diffMs = end - start
@@ -191,6 +191,12 @@ function reportFileName(projectName, reportName) {
 
   const date = new Date().toISOString().slice(0, 10)
   return `${safeProject}_${safeReport}_${date}.pdf`
+}
+
+function clampPercent(value) {
+  const n = Number(value || 0)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(100, n))
 }
 
 function loadImageAsDataUrl(url) {
@@ -241,69 +247,71 @@ async function buildPdf(title, subtitle) {
     }
   }
 
-function drawWrappedText(text, x, topY, maxWidth, lineHeight = 9.2) {
-  const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
-  pdf.text(lines, x, topY, { baseline: 'top' })
-  return lines.length * lineHeight
-}
+  function drawWrappedText(text, x, topY, maxWidth, lineHeight = 9.2) {
+    const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
+    pdf.text(lines, x, topY, { baseline: 'top' })
+    return lines.length * lineHeight
+  }
 
   function sectionTitle(text) {
-    addPageIfNeeded(18)
+    addPageIfNeeded(16)
     pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(13)
+    pdf.setFontSize(12)
     pdf.text(text, margin, y)
-    y += 7
+    y += 6
     pdf.setDrawColor(190)
     pdf.line(margin, y, pageWidth - margin, y)
-    y += 7
+    y += 6
   }
 
   function labelValue(label, value) {
     addPageIfNeeded(12)
     pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(10.5)
+    pdf.setFontSize(10)
     pdf.text(`${label}:`, margin, y)
+
     pdf.setFont('helvetica', 'normal')
-    const used = drawWrappedText(safeStr(value) || '-', margin + 34, y - 1, contentWidth - 34, 7.4)
+    pdf.setFontSize(9)
+    const used = drawWrappedText(safeStr(value) || '-', margin + 34, y - 1, contentWidth - 34, 8.8)
     y += Math.max(8, used + 2)
   }
 
-let summaryCardIndex = 0
-const summaryCardHeight = 18
-const summaryCardGap = 4
+  let summaryCardIndex = 0
+  const summaryCardHeight = 18
+  const summaryCardGap = 4
 
-function resetSummaryCards() {
-  summaryCardIndex = 0
-}
-
-function addSummaryCard(label, value) {
-  const cardWidth = (contentWidth - 6) / 2
-  const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
-  const cardY = y
-
-  pdf.setDrawColor(220)
-  pdf.rect(x, cardY, cardWidth, summaryCardHeight)
-
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(8)
-  const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
-  pdf.text(labelLines, x + 3, cardY + 3, { baseline: 'top' })
-
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(10.5)
-  pdf.text(safeStr(value), x + 3, cardY + 13)
-
-  summaryCardIndex += 1
-  if (summaryCardIndex % 2 === 0) {
-    y += summaryCardHeight + summaryCardGap
+  function resetSummaryCards() {
+    summaryCardIndex = 0
   }
-}
 
-function finishSummaryCards() {
-  if (summaryCardIndex % 2 !== 0) {
-    y += summaryCardHeight + summaryCardGap
+  function addSummaryCard(label, value) {
+    const cardWidth = (contentWidth - 6) / 2
+    const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
+    const cardY = y
+
+    pdf.setDrawColor(220)
+    pdf.rect(x, cardY, cardWidth, summaryCardHeight)
+
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
+    pdf.text(labelLines, x + 3, cardY + 3, { baseline: 'top' })
+
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(10.5)
+    pdf.text(safeStr(value), x + 3, cardY + 13)
+
+    summaryCardIndex += 1
+    if (summaryCardIndex % 2 === 0) {
+      y += summaryCardHeight + summaryCardGap
+    }
   }
-}
+
+  function finishSummaryCards() {
+    if (summaryCardIndex % 2 !== 0) {
+      y += summaryCardHeight + summaryCardGap
+    }
+  }
 
   function addDivider() {
     addPageIfNeeded(8)
@@ -312,24 +320,24 @@ function finishSummaryCards() {
     y += 8
   }
 
-function drawBarChart(titleText, percent) {
-  addPageIfNeeded(18)
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(9.5)
-  pdf.text(titleText, margin, y)
-  y += 5
+  function drawBarChart(titleText, percent) {
+    addPageIfNeeded(18)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(9.5)
+    pdf.text(titleText, margin, y)
+    y += 5
 
-  pdf.setDrawColor(180)
-  pdf.rect(margin, y, contentWidth, 4.5)
-  pdf.setFillColor(90, 90, 90)
-  pdf.rect(margin, y, (contentWidth * percent) / 100, 4.5, 'F')
-  y += 8
+    pdf.setDrawColor(180)
+    pdf.rect(margin, y, contentWidth, 4.5)
+    pdf.setFillColor(90, 90, 90)
+    pdf.rect(margin, y, (contentWidth * clampPercent(percent)) / 100, 4.5, 'F')
+    y += 8
 
-  pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(9)
-  pdf.text(`${percent.toFixed(1)}%`, margin, y)
-  y += 5
-}
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(9)
+    pdf.text(`${clampPercent(percent).toFixed(1)}%`, margin, y)
+    y += 5
+  }
 
   if (logoDataUrl) {
     try {
@@ -338,17 +346,17 @@ function drawBarChart(titleText, percent) {
   }
 
   pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(17)
+  pdf.setFontSize(16)
   pdf.text(title, logoDataUrl ? margin + 30 : margin, y + 8)
 
   pdf.setFont('helvetica', 'normal')
-  pdf.setFontSize(10.5)
+  pdf.setFontSize(10)
   pdf.text(subtitle, logoDataUrl ? margin + 30 : margin, y + 15)
 
-  y += 30
+  y += 28
   pdf.setDrawColor(180)
   pdf.line(margin, y, pageWidth - margin, y)
-  y += 9
+  y += 8
 
   return {
     pdf,
@@ -577,7 +585,8 @@ export default function ObraRelatoriosPage() {
 
     return map
   }, [logs])
-    function buildBlocks(logRows, photoRows) {
+
+  function buildBlocks(logRows, photoRows) {
     const blockMap = {}
 
     function ensureBlock(unitStageId) {
@@ -855,8 +864,7 @@ export default function ObraRelatoriosPage() {
 
     return counts
   }, [filteredObservationRows])
-
-  async function generateDiaryPdf() {
+    async function generateDiaryPdf() {
     if (!project) return
 
     const ctx = await buildPdf('DIÁRIO DE OBRA', 'Relatório automático de acompanhamento da obra')
@@ -866,6 +874,7 @@ export default function ObraRelatoriosPage() {
       labelValue,
       resetSummaryCards,
       addSummaryCard,
+      finishSummaryCards,
       addDivider,
       drawWrappedText,
       drawBarChart,
@@ -885,22 +894,21 @@ export default function ObraRelatoriosPage() {
     setY(getY() + 3)
 
     sectionTitle('Resumo do dia')
-resetSummaryCards()
-addSummaryCard('Unidades com atividade', diarySummary.moved_units)
-addSummaryCard('Etapas iniciadas', diarySummary.started)
-addSummaryCard('Etapas concluídas', diarySummary.finished)
-addSummaryCard('Fotos registradas', diarySummary.total_photos)
-addSummaryCard('Observações registradas', diarySummary.observations)
-addSummaryCard('Registros do histórico', diarySummary.total_logs)
-finishSummaryCards()
-setY(getY() + 6)
-
+    resetSummaryCards()
+    addSummaryCard('Unidades com atividade', diarySummary.moved_units)
+    addSummaryCard('Etapas iniciadas', diarySummary.started)
+    addSummaryCard('Etapas concluídas', diarySummary.finished)
+    addSummaryCard('Fotos registradas', diarySummary.total_photos)
+    addSummaryCard('Observações registradas', diarySummary.observations)
+    addSummaryCard('Registros do histórico', diarySummary.total_logs)
+    finishSummaryCards()
+    setY(getY() + 6)
 
     sectionTitle(`Atividades da data ${formatDate(`${diaryDate}T12:00:00`)}`)
 
     if (diaryBlocks.length === 0) {
       pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(11)
+      pdf.setFontSize(10)
       pdf.text('Nenhuma movimentação encontrada para a data selecionada.', margin, getY())
       setY(getY() + 8)
     } else {
@@ -910,7 +918,7 @@ setY(getY() + 6)
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
         pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(12)
+        pdf.setFontSize(11.5)
         pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
@@ -925,7 +933,7 @@ setY(getY() + 6)
         if (block.events.length > 0) {
           addPageIfNeeded(14)
           pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10.5)
+          pdf.setFontSize(10)
           pdf.text('Atividades registradas no dia', margin, getY())
           setY(getY() + 8)
 
@@ -935,7 +943,7 @@ setY(getY() + 6)
           block.events.forEach((event) => {
             addPageIfNeeded(10)
             const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 7.2) + 1)
+            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.2) + 1)
           })
 
           setY(getY() + 2)
@@ -944,19 +952,19 @@ setY(getY() + 6)
         if (safeStr(block.notes).trim()) {
           addPageIfNeeded(14)
           pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10.5)
+          pdf.setFontSize(10)
           pdf.text('Observação da etapa', margin, getY())
           setY(getY() + 8)
 
           pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(9)
-          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 7.2) + 2)
+          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.2) + 2)
         }
 
         if (block.photos.length > 0) {
           addPageIfNeeded(14)
           pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10.5)
+          pdf.setFontSize(10)
           pdf.text('Fotos registradas na data', margin, getY())
           setY(getY() + 8)
 
@@ -969,26 +977,30 @@ setY(getY() + 6)
             }
 
             if (imageDataUrl) {
-              addPageIfNeeded(74)
+              addPageIfNeeded(72)
               pdf.setFont('helvetica', 'bold')
               pdf.setFontSize(9)
               pdf.text(getPhotoKindLabel(photo.kind), margin, getY())
-              setY(getY() + 6)
+              setY(getY() + 5)
 
               try {
-                pdf.addImage(imageDataUrl, 'JPEG', margin, getY(), 70, 52)
-                setY(getY() + 56)
+                pdf.addImage(imageDataUrl, 'JPEG', margin, getY(), 62, 46)
+                setY(getY() + 49)
               } catch {
-                setY(getY() + drawWrappedText('Imagem não pôde ser renderizada.', margin, getY(), contentWidth, 7.2) + 1)
+                pdf.setFont('helvetica', 'normal')
+                pdf.setFontSize(9)
+                setY(getY() + drawWrappedText('Imagem não pôde ser renderizada.', margin, getY(), contentWidth, 8.8) + 1)
               }
 
               pdf.setFont('helvetica', 'normal')
-              pdf.setFontSize(9.5)
+              pdf.setFontSize(8.5)
               const meta = `${formatDate(photo.created_at)} ${formatTime(photo.created_at)}${photo.user_name ? ` - ${photo.user_name}` : ''}${safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}`
-              setY(getY() + drawWrappedText(meta, margin, getY(), contentWidth, 6.4) + 3)
+              setY(getY() + drawWrappedText(meta, margin, getY(), contentWidth, 8) + 3)
             } else {
+              pdf.setFont('helvetica', 'normal')
+              pdf.setFontSize(9)
               const txt = `${formatDate(photo.created_at)} ${formatTime(photo.created_at)} - ${getPhotoKindLabel(photo.kind)}${photo.user_name ? ` (${photo.user_name})` : ''}${safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}`
-              setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 7.2) + 1)
+              setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.2) + 1)
             }
           }
         }
@@ -1006,7 +1018,7 @@ setY(getY() + 6)
     labelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
 
     const totalUnits = Math.max(1, projectSummary.total_units)
-    drawBarChart('Progresso Geral da Obra', Math.max(0, Math.min(100, Number(projectSummary.avg_progress || 0))))
+    drawBarChart('Progresso Geral da Obra', projectSummary.avg_progress)
     drawBarChart('Unidades concluídas', (projectSummary.done / totalUnits) * 100)
     drawBarChart('Unidades em andamento', (projectSummary.in_progress / totalUnits) * 100)
     drawBarChart('Unidades pendentes', (projectSummary.pending / totalUnits) * 100)
@@ -1024,6 +1036,7 @@ setY(getY() + 6)
       labelValue,
       resetSummaryCards,
       addSummaryCard,
+      finishSummaryCards,
       addDivider,
       drawWrappedText,
       getY,
@@ -1036,26 +1049,26 @@ setY(getY() + 6)
     labelValue('Obra', project.name || '-')
     labelValue('Cliente', project.client_name || '-')
     labelValue('Cidade', project.city || '-')
-    labelValue('Data inicial', formatDate(startDate))
-    labelValue('Data final', formatDate(endDate))
+    labelValue('Data inicial', formatDate(`${startDate}T12:00:00`))
+    labelValue('Data final', formatDate(`${endDate}T12:00:00`))
     labelValue('Responsável pela emissão', 'Denio Losi')
 
     setY(getY() + 3)
 
     sectionTitle('Resumo do período')
-resetSummaryCards()
-addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
-addSummaryCard('Registros no período', periodSummary.total_logs)
-addSummaryCard('Fotos no período', periodSummary.total_photos)
-addSummaryCard('Total de unidades', units.length)
-finishSummaryCards()
-setY(getY() + 6)
+    resetSummaryCards()
+    addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
+    addSummaryCard('Registros no período', periodSummary.total_logs)
+    addSummaryCard('Fotos no período', periodSummary.total_photos)
+    addSummaryCard('Total de unidades', units.length)
+    finishSummaryCards()
+    setY(getY() + 6)
 
-    sectionTitle(`Atividades do período ${formatDate(startDate)} até ${formatDate(endDate)}`)
+    sectionTitle(`Atividades do período ${formatDate(`${startDate}T12:00:00`)} até ${formatDate(`${endDate}T12:00:00`)}`)
 
     if (periodBlocks.length === 0) {
       pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(11)
+      pdf.setFontSize(10)
       pdf.text('Nenhuma movimentação encontrada no período selecionado.', margin, getY())
       setY(getY() + 8)
     } else {
@@ -1065,7 +1078,7 @@ setY(getY() + 6)
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
         pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(12)
+        pdf.setFontSize(11.5)
         pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
@@ -1080,7 +1093,7 @@ setY(getY() + 6)
         if (block.events.length > 0) {
           addPageIfNeeded(14)
           pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10.5)
+          pdf.setFontSize(10)
           pdf.text('Atividades registradas no período', margin, getY())
           setY(getY() + 8)
 
@@ -1090,7 +1103,7 @@ setY(getY() + 6)
           block.events.forEach((event) => {
             addPageIfNeeded(10)
             const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 7.2) + 1)
+            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.2) + 1)
           })
 
           setY(getY() + 2)
@@ -1099,13 +1112,13 @@ setY(getY() + 6)
         if (safeStr(block.notes).trim()) {
           addPageIfNeeded(14)
           pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10.5)
+          pdf.setFontSize(10)
           pdf.text('Observação da etapa', margin, getY())
           setY(getY() + 8)
 
           pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(9)
-          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 7.2) + 2)
+          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.2) + 2)
         }
 
         setY(getY() + 3)
@@ -1117,7 +1130,7 @@ setY(getY() + 6)
 
     if (periodSummary.stages.length === 0) {
       pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(11)
+      pdf.setFontSize(10)
       pdf.text('Nenhum consolidado disponível para o período.', margin, getY())
       setY(getY() + 8)
     } else {
@@ -1131,7 +1144,8 @@ setY(getY() + 6)
 
     pdf.save(reportFileName(project.name, `resumo_por_periodo_${safeStr(startDate)}_a_${safeStr(endDate)}`))
   }
-    async function generateObservationsPdf() {
+
+  async function generateObservationsPdf() {
     if (!project) return
 
     const ctx = await buildPdf('OBSERVAÇÕES E PENDÊNCIAS', 'Relatório filtrado por status, unidade e etapa')
@@ -1141,6 +1155,7 @@ setY(getY() + 6)
       labelValue,
       resetSummaryCards,
       addSummaryCard,
+      finishSummaryCards,
       addDivider,
       drawWrappedText,
       getY,
@@ -1169,20 +1184,20 @@ setY(getY() + 6)
     setY(getY() + 3)
 
     sectionTitle('Resumo do relatório')
-resetSummaryCards()
-addSummaryCard('Total filtrado', observationSummary.total)
-addSummaryCard('Pendentes', observationSummary.pending)
-addSummaryCard('Em andamento', observationSummary.in_progress)
-addSummaryCard('Concluídas', observationSummary.done)
-addSummaryCard('Com observação', observationSummary.with_notes)
-finishSummaryCards()
-setY(getY() + 6)
+    resetSummaryCards()
+    addSummaryCard('Total filtrado', observationSummary.total)
+    addSummaryCard('Pendentes', observationSummary.pending)
+    addSummaryCard('Em andamento', observationSummary.in_progress)
+    addSummaryCard('Concluídas', observationSummary.done)
+    addSummaryCard('Com observação', observationSummary.with_notes)
+    finishSummaryCards()
+    setY(getY() + 6)
 
     sectionTitle('Itens encontrados')
 
     if (filteredObservationRows.length === 0) {
       pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(11)
+      pdf.setFontSize(10)
       pdf.text('Nenhum registro encontrado com os filtros selecionados.', margin, getY())
       setY(getY() + 8)
     } else {
@@ -1192,7 +1207,7 @@ setY(getY() + 6)
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
         pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(12)
+        pdf.setFontSize(11.5)
         pdf.text(`Unidade ${safeStr(row.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
@@ -1208,13 +1223,13 @@ setY(getY() + 6)
 
         addPageIfNeeded(16)
         pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(10.5)
+        pdf.setFontSize(10)
         pdf.text('Observação', margin, getY())
         setY(getY() + 8)
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(9)
-        setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 7.2) + 2)
+        setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 9.2) + 2)
 
         setY(getY() + 3)
         addDivider()
@@ -1223,8 +1238,7 @@ setY(getY() + 6)
 
     pdf.save(reportFileName(project.name, 'observacoes_e_pendencias'))
   }
-
-  async function exportCurrentReportToPdf() {
+    async function exportCurrentReportToPdf() {
     if (!project) return
 
     setExportingPdf(true)
@@ -1427,7 +1441,7 @@ setY(getY() + 6)
 
           <div style={cardStyle}>
             <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Diário de obra — {formatDate(diaryDate)}
+              Diário de obra — {formatDate(`${diaryDate}T12:00:00`)}
             </div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
               Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.
@@ -1565,7 +1579,7 @@ setY(getY() + 6)
 
           <div style={cardStyle}>
             <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Resumo do período — {formatDate(startDate)} até {formatDate(endDate)}
+              Resumo do período — {formatDate(`${startDate}T12:00:00`)} até {formatDate(`${endDate}T12:00:00`)}
             </div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
               Relatório cronológico das atividades registradas no período.
