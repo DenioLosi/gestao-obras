@@ -231,7 +231,7 @@ async function buildPdf(title, subtitle) {
   const pageHeight = pdf.internal.pageSize.getHeight()
   const margin = 12
   const contentWidth = pageWidth - margin * 2
-  const valueXOffset = 45
+  const valueXOffset = 65
   let y = margin
 
   let logoDataUrl = null
@@ -246,7 +246,7 @@ async function buildPdf(title, subtitle) {
     }
   }
 
-  function drawWrappedText(text, x, topY, maxWidth, lineHeight = 9.6) {
+  function drawWrappedText(text, x, topY, maxWidth, lineHeight = 11) {
     const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
     pdf.text(lines, x, topY, { baseline: 'top' })
     return lines.length * lineHeight
@@ -278,12 +278,12 @@ async function buildPdf(title, subtitle) {
       contentWidth - valueXOffset,
       9.4
     )
-    y += Math.max(8, used + 2)
+    y += Math.max(10, used + 4)
   }
 
   let summaryCardIndex = 0
-  const summaryCardHeight = 18
-  const summaryCardGap = 4
+  const summaryCardHeight = 20
+  const summaryCardGap = 6
 
   function resetSummaryCards() {
     summaryCardIndex = 0
