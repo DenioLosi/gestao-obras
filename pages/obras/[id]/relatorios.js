@@ -130,6 +130,7 @@ function actionToHuman(log) {
     if (fromStatus === 'pending' && toStatus === 'in_progress') return 'Etapa iniciada'
     if (fromStatus === 'in_progress' && toStatus === 'done') return 'Etapa concluída'
     if (fromStatus === 'pending' && toStatus === 'done') return 'Etapa concluída'
+
     return `Status alterado de ${statusLabel(fromStatus)} para ${statusLabel(toStatus)}`
   }
 
@@ -147,6 +148,7 @@ function durationLabel(startValue, endValue) {
   if (!startValue || !endValue) return ''
   const start = new Date(startValue).getTime()
   const end = new Date(endValue).getTime()
+
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return ''
 
   const diffMs = end - start
@@ -225,25 +227,53 @@ function loadImageAsDataUrl(url) {
   })
 }
 
-async function buildPdf(title, subtitle) {
+function calcFitSize(originalWidth, originalHeight, maxWidth, maxHeight) {
+  if (!originalWidth || !originalHeight) {
+    return { width: maxWidth, height: maxHeight }
+  }
+
+  const widthRatio = maxWidth / originalWidth
+  const heightRatio = maxHeight / originalHeight
+  const ratio = Math.min(widthRatio, heightRatio)
+
+  return {
+    width: originalWidth * ratio,
+    height: originalHeight * ratio,
+  }
+}
+async function createPdfEngine(title, subtitle) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const pageWidth = pdf.internal.pageSize.getWidth()
   const pageHeight = pdf.internal.pageSize.getHeight()
+
   const margin = 12
   const contentWidth = pageWidth - margin * 2
-  const valueXOffset = 65
-  let y = margin
+  const bottomLimit = pageHeight - margin
+  const valueX = margin + 55
+  const valueWidth = pageWidth - margin - valueX
 
+  let y = margin
   let logoDataUrl = null
+
   if (REPORT_LOGO_URL) {
     logoDataUrl = await loadImageAsDataUrl(REPORT_LOGO_URL)
   }
 
-  function addPageIfNeeded(extra = 10) {
-    if (y + extra > pageHeight - margin) {
+  function addPageIfNeeded(requiredHeight = 10) {
+    if (y + requiredHeight > bottomLimit) {
       pdf.addPage()
       y = margin
     }
+  }
+
+  function setBaseFont() {
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(9)
+  }
+
+  function setBoldFont(size = 10) {
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(size)
   }
 
   function drawWrappedText(text, x, topY, maxWidth, lineHeight = 11) {
@@ -252,10 +282,35 @@ async function buildPdf(title, subtitle) {
     return lines.length * lineHeight
   }
 
-  function sectionTitle(text) {
+  function writeParagraph(text, options = {}) {
+    const {
+      x = margin,
+      width = contentWidth,
+      lineHeight = 11,
+      fontSize = 9,
+      bold = false,
+      topGap = 0,
+      bottomGap = 2,
+    } = options
+
+    addPageIfNeeded(topGap + lineHeight + bottomGap)
+    y += topGap
+
+    if (bold) {
+      setBoldFont(fontSize)
+    } else {
+      setBaseFont()
+      pdf.setFontSize(fontSize)
+    }
+
+    const used = drawWrappedText(text, x, y, width, lineHeight)
+    y += used + bottomGap
+    return used
+  }
+
+  function drawSectionTitle(text) {
     addPageIfNeeded(16)
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(12)
+    setBoldFont(12)
     pdf.text(text, margin, y)
     y += 6
     pdf.setDrawColor(190)
@@ -263,72 +318,67 @@ async function buildPdf(title, subtitle) {
     y += 6
   }
 
-  function labelValue(label, value) {
-    addPageIfNeeded(12)
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(10)
+  function drawLabelValue(label, value) {
+    addPageIfNeeded(14)
+    setBoldFont(10)
     pdf.text(`${label}:`, margin, y)
 
-    pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(9)
-    const used = drawWrappedText(
-      safeStr(value) || '-',
-      margin + valueXOffset,
-      y - 1,
-      contentWidth - valueXOffset,
-      9.4
-    )
+    setBaseFont()
+    const used = drawWrappedText(safeStr(value) || '-', valueX, y - 1, valueWidth, 11)
     y += Math.max(10, used + 4)
   }
 
-  let summaryCardIndex = 0
-  const summaryCardHeight = 20
-  const summaryCardGap = 6
-
-  function resetSummaryCards() {
-    summaryCardIndex = 0
-  }
-
-  function addSummaryCard(label, value) {
-    const cardWidth = (contentWidth - 6) / 2
-    const x = ((summaryCardIndex % 2) * (cardWidth + 6)) + margin
-    const cardY = y
-
-    pdf.setDrawColor(220)
-    pdf.rect(x, cardY, cardWidth, summaryCardHeight)
-
-    pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(8)
-    const labelLines = pdf.splitTextToSize(safeStr(label), cardWidth - 6)
-    pdf.text(labelLines, x + 3, cardY + 3, { baseline: 'top' })
-
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(10.5)
-    pdf.text(safeStr(value), x + 3, cardY + 13)
-
-    summaryCardIndex += 1
-    if (summaryCardIndex % 2 === 0) {
-      y += summaryCardHeight + summaryCardGap
-    }
-  }
-
-  function finishSummaryCards() {
-    if (summaryCardIndex % 2 !== 0) {
-      y += summaryCardHeight + summaryCardGap
-    }
-  }
-
-  function addDivider() {
+  function drawDivider() {
     addPageIfNeeded(8)
     pdf.setDrawColor(215)
     pdf.line(margin, y, pageWidth - margin, y)
     y += 8
   }
 
+  let summaryCardIndex = 0
+  const summaryCardHeight = 22
+  const summaryCardGapX = 6
+  const summaryCardGapY = 6
+  const summaryCardWidth = (contentWidth - summaryCardGapX) / 2
+
+  function resetSummaryCards() {
+    summaryCardIndex = 0
+  }
+
+  function drawSummaryCard(label, value) {
+    const col = summaryCardIndex % 2
+    const x = margin + col * (summaryCardWidth + summaryCardGapX)
+    const cardY = y
+
+    addPageIfNeeded(summaryCardHeight + summaryCardGapY)
+
+    pdf.setDrawColor(220)
+    pdf.rect(x, cardY, summaryCardWidth, summaryCardHeight)
+
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    const labelLines = pdf.splitTextToSize(safeStr(label), summaryCardWidth - 6)
+    pdf.text(labelLines, x + 3, cardY + 3, { baseline: 'top' })
+
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(11)
+    pdf.text(safeStr(value), x + 3, cardY + 15)
+
+    summaryCardIndex += 1
+    if (summaryCardIndex % 2 === 0) {
+      y += summaryCardHeight + summaryCardGapY
+    }
+  }
+
+  function finishSummaryCards() {
+    if (summaryCardIndex % 2 !== 0) {
+      y += summaryCardHeight + summaryCardGapY
+    }
+  }
+
   function drawBarChart(titleText, percent) {
     addPageIfNeeded(18)
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(9.5)
+    setBoldFont(9.5)
     pdf.text(titleText, margin, y)
     y += 5
 
@@ -338,10 +388,50 @@ async function buildPdf(title, subtitle) {
     pdf.rect(margin, y, (contentWidth * clampPercent(percent)) / 100, 4.5, 'F')
     y += 8
 
-    pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(9)
+    setBaseFont()
     pdf.text(`${clampPercent(percent).toFixed(1)}%`, margin, y)
     y += 5
+  }
+
+  async function drawPhotoBlock(photo) {
+    addPageIfNeeded(76)
+
+    setBoldFont(9.5)
+    pdf.text(getPhotoKindLabel(photo.kind), margin, y)
+    y += 5
+
+    let imageDataUrl = null
+    if (photo.path) {
+      const { data } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(photo.path, 60 * 30)
+      if (data?.signedUrl) {
+        imageDataUrl = await loadImageAsDataUrl(data.signedUrl)
+      }
+    }
+
+    if (imageDataUrl) {
+      try {
+        const img = new Image()
+        img.src = imageDataUrl
+
+        await new Promise((resolve) => {
+          img.onload = resolve
+          img.onerror = resolve
+        })
+
+        const fit = calcFitSize(img.naturalWidth || 1, img.naturalHeight || 1, 70, 50)
+        pdf.addImage(imageDataUrl, 'JPEG', margin, y, fit.width, fit.height)
+        y += fit.height + 4
+      } catch {
+        writeParagraph('Imagem não pôde ser renderizada.', { fontSize: 9, lineHeight: 10, bottomGap: 2 })
+      }
+    } else {
+      writeParagraph('Imagem não disponível para este registro.', { fontSize: 9, lineHeight: 10, bottomGap: 2 })
+    }
+
+    writeParagraph(
+      `${formatDate(photo.created_at)} ${formatTime(photo.created_at)}${photo.user_name ? ` - ${photo.user_name}` : ''}${safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}`,
+      { fontSize: 8.5, lineHeight: 9.5, bottomGap: 3 }
+    )
   }
 
   if (logoDataUrl) {
@@ -350,11 +440,10 @@ async function buildPdf(title, subtitle) {
     } catch {}
   }
 
-  pdf.setFont('helvetica', 'bold')
-  pdf.setFontSize(16)
+  setBoldFont(16)
   pdf.text(title, logoDataUrl ? margin + 30 : margin, y + 8)
 
-  pdf.setFont('helvetica', 'normal')
+  setBaseFont()
   pdf.setFontSize(10)
   pdf.text(subtitle, logoDataUrl ? margin + 30 : margin, y + 15)
 
@@ -372,14 +461,15 @@ async function buildPdf(title, subtitle) {
       y = v
     },
     addPageIfNeeded,
-    drawWrappedText,
-    sectionTitle,
-    labelValue,
+    writeParagraph,
+    drawSectionTitle,
+    drawLabelValue,
+    drawDivider,
     resetSummaryCards,
-    addSummaryCard,
+    drawSummaryCard,
     finishSummaryCards,
-    addDivider,
     drawBarChart,
+    drawPhotoBlock,
   }
 }
 
@@ -467,19 +557,23 @@ export default function ObraRelatoriosPage() {
         .select('id, project_id, identifier, status, progress, is_active')
         .eq('project_id', projectId)
         .order('identifier', { ascending: true }),
+
       supabase
         .from('stages')
         .select('id, project_id, name, order_index, is_active')
         .eq('project_id', projectId)
         .order('order_index', { ascending: true }),
+
       supabase
         .from('unit_stages')
         .select('id, unit_id, stage_id, status, notes, custom_name, order_index, is_active')
         .order('order_index', { ascending: true }),
+
       supabase
         .from('unit_stage_logs')
         .select('id, unit_stage_id, user_id, action, old_value, new_value, created_at')
         .order('created_at', { ascending: false }),
+
       supabase
         .from('unit_stage_photos')
         .select('id, unit_stage_id, user_id, kind, path, caption, created_at')
@@ -606,6 +700,7 @@ export default function ObraRelatoriosPage() {
     logRows.forEach((log) => {
       const block = ensureBlock(log.unit_stage_id)
       if (!block) return
+
       const human = actionToHuman(log)
       if (!human) return
 
@@ -635,7 +730,6 @@ export default function ObraRelatoriosPage() {
       photos: [...block.photos].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
     }))
   }
-
   const diaryLogs = useMemo(() => {
     const from = startOfDayIso(diaryDate)
     const to = endOfDayIso(diaryDate)
@@ -824,56 +918,54 @@ export default function ObraRelatoriosPage() {
 
     return counts
   }, [filteredObservationRows])
-    async function generateDiaryPdf() {
+
+  async function generateDiaryPdf() {
     if (!project) return
 
-    const ctx = await buildPdf('DIÁRIO DE OBRA', 'Relatório automático de acompanhamento da obra')
     const {
       pdf,
-      sectionTitle,
-      labelValue,
-      resetSummaryCards,
-      addSummaryCard,
-      finishSummaryCards,
-      addDivider,
-      drawWrappedText,
-      drawBarChart,
-      getY,
-      setY,
-      addPageIfNeeded,
       margin,
       contentWidth,
-    } = ctx
+      drawSectionTitle,
+      drawLabelValue,
+      drawDivider,
+      resetSummaryCards,
+      drawSummaryCard,
+      finishSummaryCards,
+      drawBarChart,
+      drawPhotoBlock,
+      writeParagraph,
+      addPageIfNeeded,
+      getY,
+      setY,
+    } = await createPdfEngine('DIÁRIO DE OBRA', 'Relatório automático de acompanhamento da obra')
 
-    labelValue('Obra', project.name || '-')
-    labelValue('Cliente', project.client_name || '-')
-    labelValue('Cidade', project.city || '-')
-    labelValue('Data do diário', formatDate(`${diaryDate}T12:00:00`))
-    labelValue('Responsável pela emissão', 'Denio Losi')
+    drawLabelValue('Obra', project.name || '-')
+    drawLabelValue('Cliente', project.client_name || '-')
+    drawLabelValue('Cidade', project.city || '-')
+    drawLabelValue('Data do diário', formatDate(`${diaryDate}T12:00:00`))
+    drawLabelValue('Responsável pela emissão', 'Denio Losi')
 
     setY(getY() + 3)
 
-    sectionTitle('Resumo do dia')
+    drawSectionTitle('Resumo do dia')
     resetSummaryCards()
-    addSummaryCard('Unidades com atividade', diarySummary.moved_units)
-    addSummaryCard('Etapas iniciadas', diarySummary.started)
-    addSummaryCard('Etapas concluídas', diarySummary.finished)
-    addSummaryCard('Fotos registradas', diarySummary.total_photos)
-    addSummaryCard('Observações registradas', diarySummary.observations)
-    addSummaryCard('Registros do histórico', diarySummary.total_logs)
+    drawSummaryCard('Unidades com atividade', diarySummary.moved_units)
+    drawSummaryCard('Etapas iniciadas', diarySummary.started)
+    drawSummaryCard('Etapas concluídas', diarySummary.finished)
+    drawSummaryCard('Fotos registradas', diarySummary.total_photos)
+    drawSummaryCard('Observações registradas', diarySummary.observations)
+    drawSummaryCard('Registros do histórico', diarySummary.total_logs)
     finishSummaryCards()
-    setY(getY() + 6)
+    setY(getY() + 4)
 
-    sectionTitle(`Atividades da data ${formatDate(`${diaryDate}T12:00:00`)}`)
+    drawSectionTitle(`Atividades da data ${formatDate(`${diaryDate}T12:00:00`)}`)
 
     if (diaryBlocks.length === 0) {
-      pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(10)
-      pdf.text('Nenhuma movimentação encontrada para a data selecionada.', margin, getY())
-      setY(getY() + 8)
+      writeParagraph('Nenhuma movimentação encontrada para a data selecionada.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
     } else {
       for (const block of diaryBlocks) {
-        addPageIfNeeded(36)
+        addPageIfNeeded(42)
 
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
@@ -882,91 +974,44 @@ export default function ObraRelatoriosPage() {
         pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
-        labelValue('Etapa', block.stage_name)
-        labelValue('Status atual', statusLabel(block.status))
-        if (block.started_at) labelValue('Início', formatDateTime(block.started_at))
-        if (block.finished_at) labelValue('Conclusão', formatDateTime(block.finished_at))
-        if (block.started_at && block.finished_at) labelValue('Duração', durationLabel(block.started_at, block.finished_at))
+        drawLabelValue('Etapa', block.stage_name)
+        drawLabelValue('Status atual', statusLabel(block.status))
+        if (block.started_at) drawLabelValue('Início', formatDateTime(block.started_at))
+        if (block.finished_at) drawLabelValue('Conclusão', formatDateTime(block.finished_at))
+        if (block.started_at && block.finished_at) drawLabelValue('Duração', durationLabel(block.started_at, block.finished_at))
 
         if (block.events.length > 0) {
-          addPageIfNeeded(14)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10)
-          pdf.text('Atividades registradas no dia', margin, getY())
-          setY(getY() + 8)
-
-          pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(9)
+          drawSectionTitle('Atividades registradas no dia')
           block.events.forEach((event) => {
-            addPageIfNeeded(10)
-            const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.4) + 1)
+            writeParagraph(
+              `• ${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`,
+              { fontSize: 9, lineHeight: 11, bottomGap: 1 }
+            )
           })
-          setY(getY() + 2)
         }
 
         if (safeStr(block.notes).trim()) {
-          addPageIfNeeded(14)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10)
-          pdf.text('Observação da etapa', margin, getY())
-          setY(getY() + 8)
-
-          pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(9)
-          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.4) + 2)
+          drawSectionTitle('Observação da etapa')
+          writeParagraph(block.notes, { fontSize: 9, lineHeight: 11, bottomGap: 2 })
         }
 
         if (block.photos.length > 0) {
-          addPageIfNeeded(14)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10)
-          pdf.text('Fotos registradas na data', margin, getY())
-          setY(getY() + 8)
-
+          drawSectionTitle('Fotos registradas na data')
           for (const photo of block.photos) {
-            let imageDataUrl = null
-
-            if (photo.path) {
-              const { data } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(photo.path, 60 * 30)
-              imageDataUrl = data?.signedUrl ? await loadImageAsDataUrl(data.signedUrl) : null
-            }
-
-            if (imageDataUrl) {
-              addPageIfNeeded(74)
-              pdf.setFont('helvetica', 'bold')
-              pdf.setFontSize(9)
-              pdf.text(getPhotoKindLabel(photo.kind), margin, getY())
-              setY(getY() + 5)
-
-              try {
-                pdf.addImage(imageDataUrl, 'JPEG', margin, getY(), 62, 46)
-                setY(getY() + 49)
-              } catch {
-                pdf.setFont('helvetica', 'normal')
-                pdf.setFontSize(9)
-                setY(getY() + drawWrappedText('Imagem não pôde ser renderizada.', margin, getY(), contentWidth, 8.8) + 1)
-              }
-
-              pdf.setFont('helvetica', 'normal')
-              pdf.setFontSize(8.5)
-              const meta = `${formatDate(photo.created_at)} ${formatTime(photo.created_at)}${photo.user_name ? ` - ${photo.user_name}` : ''}${safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}`
-              setY(getY() + drawWrappedText(meta, margin, getY(), contentWidth, 8.4) + 3)
-            }
+            await drawPhotoBlock(photo)
           }
         }
 
-        setY(getY() + 3)
-        addDivider()
+        drawDivider()
       }
     }
 
-    sectionTitle('Resumo atualizado da obra')
-    labelValue('Total de unidades', projectSummary.total_units)
-    labelValue('Unidades pendentes', projectSummary.pending)
-    labelValue('Unidades em andamento', projectSummary.in_progress)
-    labelValue('Unidades concluídas', projectSummary.done)
-    labelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
+    drawSectionTitle('Resumo atualizado da obra')
+    drawLabelValue('Total de unidades', projectSummary.total_units)
+    drawLabelValue('Unidades pendentes', projectSummary.pending)
+    drawLabelValue('Unidades em andamento', projectSummary.in_progress)
+    drawLabelValue('Unidades concluídas', projectSummary.done)
+    drawLabelValue('Progresso médio', `${projectSummary.avg_progress.toFixed(2)}%`)
 
     const totalUnits = Math.max(1, projectSummary.total_units)
     drawBarChart('Progresso Geral da Obra', projectSummary.avg_progress)
@@ -980,51 +1025,47 @@ export default function ObraRelatoriosPage() {
   async function generatePeriodPdf() {
     if (!project) return
 
-    const ctx = await buildPdf('RESUMO POR PERÍODO', 'Relatório cronológico de movimentações da obra')
     const {
       pdf,
-      sectionTitle,
-      labelValue,
+      drawSectionTitle,
+      drawLabelValue,
+      drawDivider,
       resetSummaryCards,
-      addSummaryCard,
+      drawSummaryCard,
       finishSummaryCards,
-      addDivider,
-      drawWrappedText,
-      getY,
-      setY,
+      writeParagraph,
       addPageIfNeeded,
       margin,
       contentWidth,
-    } = ctx
+      getY,
+      setY,
+    } = await createPdfEngine('RESUMO POR PERÍODO', 'Relatório cronológico de movimentações da obra')
 
-    labelValue('Obra', project.name || '-')
-    labelValue('Cliente', project.client_name || '-')
-    labelValue('Cidade', project.city || '-')
-    labelValue('Data inicial', formatDate(`${startDate}T12:00:00`))
-    labelValue('Data final', formatDate(`${endDate}T12:00:00`))
-    labelValue('Responsável pela emissão', 'Denio Losi')
+    drawLabelValue('Obra', project.name || '-')
+    drawLabelValue('Cliente', project.client_name || '-')
+    drawLabelValue('Cidade', project.city || '-')
+    drawLabelValue('Data inicial', formatDate(`${startDate}T12:00:00`))
+    drawLabelValue('Data final', formatDate(`${endDate}T12:00:00`))
+    drawLabelValue('Responsável pela emissão', 'Denio Losi')
 
     setY(getY() + 3)
 
-    sectionTitle('Resumo do período')
+    drawSectionTitle('Resumo do período')
     resetSummaryCards()
-    addSummaryCard('Unidades com movimentação', periodSummary.moved_units)
-    addSummaryCard('Registros no período', periodSummary.total_logs)
-    addSummaryCard('Fotos no período', periodSummary.total_photos)
-    addSummaryCard('Total de unidades', units.length)
+    drawSummaryCard('Unidades com movimentação', periodSummary.moved_units)
+    drawSummaryCard('Registros no período', periodSummary.total_logs)
+    drawSummaryCard('Fotos no período', periodSummary.total_photos)
+    drawSummaryCard('Total de unidades', units.length)
     finishSummaryCards()
-    setY(getY() + 6)
+    setY(getY() + 4)
 
-    sectionTitle(`Atividades do período ${formatDate(`${startDate}T12:00:00`)} até ${formatDate(`${endDate}T12:00:00`)}`)
+    drawSectionTitle(`Atividades do período ${formatDate(`${startDate}T12:00:00`)} até ${formatDate(`${endDate}T12:00:00`)}`)
 
     if (periodBlocks.length === 0) {
-      pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(10)
-      pdf.text('Nenhuma movimentação encontrada no período selecionado.', margin, getY())
-      setY(getY() + 8)
+      writeParagraph('Nenhuma movimentação encontrada no período selecionado.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
     } else {
       for (const block of periodBlocks) {
-        addPageIfNeeded(36)
+        addPageIfNeeded(42)
 
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
@@ -1033,55 +1074,40 @@ export default function ObraRelatoriosPage() {
         pdf.text(`Unidade ${safeStr(block.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
-        labelValue('Etapa', block.stage_name)
-        labelValue('Status atual', statusLabel(block.status))
-        if (block.started_at) labelValue('Início', formatDateTime(block.started_at))
-        if (block.finished_at) labelValue('Conclusão', formatDateTime(block.finished_at))
-        if (block.started_at && block.finished_at) labelValue('Duração', durationLabel(block.started_at, block.finished_at))
+        drawLabelValue('Etapa', block.stage_name)
+        drawLabelValue('Status atual', statusLabel(block.status))
+        if (block.started_at) drawLabelValue('Início', formatDateTime(block.started_at))
+        if (block.finished_at) drawLabelValue('Conclusão', formatDateTime(block.finished_at))
+        if (block.started_at && block.finished_at) drawLabelValue('Duração', durationLabel(block.started_at, block.finished_at))
 
         if (block.events.length > 0) {
-          addPageIfNeeded(14)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10)
-          pdf.text('Atividades registradas no período', margin, getY())
-          setY(getY() + 8)
-
-          pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(9)
+          drawSectionTitle('Atividades registradas no período')
           block.events.forEach((event) => {
-            addPageIfNeeded(10)
-            const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.4) + 1)
+            writeParagraph(
+              `• ${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`,
+              { fontSize: 9, lineHeight: 11, bottomGap: 1 }
+            )
           })
-          setY(getY() + 2)
         }
 
         if (safeStr(block.notes).trim()) {
-          addPageIfNeeded(14)
-          pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(10)
-          pdf.text('Observação da etapa', margin, getY())
-          setY(getY() + 8)
-
-          pdf.setFont('helvetica', 'normal')
-          pdf.setFontSize(9)
-          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.4) + 2)
+          drawSectionTitle('Observação da etapa')
+          writeParagraph(block.notes, { fontSize: 9, lineHeight: 11, bottomGap: 2 })
         }
 
-        setY(getY() + 3)
-        addDivider()
+        drawDivider()
       }
     }
 
-    sectionTitle('Consolidado por etapa')
+    drawSectionTitle('Consolidado por etapa')
     if (periodSummary.stages.length === 0) {
-      pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(10)
-      pdf.text('Nenhum consolidado disponível para o período.', margin, getY())
-      setY(getY() + 8)
+      writeParagraph('Nenhum consolidado disponível para o período.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
     } else {
       periodSummary.stages.forEach((row) => {
-        labelValue(row.stage_name, `Iniciadas: ${row.started} | Concluídas: ${row.finished} | Observações: ${row.observations}`)
+        drawLabelValue(
+          row.stage_name,
+          `Iniciadas: ${row.started} | Concluídas: ${row.finished} | Observações: ${row.observations}`
+        )
       })
     }
 
@@ -1091,58 +1117,54 @@ export default function ObraRelatoriosPage() {
   async function generateObservationsPdf() {
     if (!project) return
 
-    const ctx = await buildPdf('OBSERVAÇÕES E PENDÊNCIAS', 'Relatório filtrado por status, unidade e etapa')
     const {
       pdf,
-      sectionTitle,
-      labelValue,
+      drawSectionTitle,
+      drawLabelValue,
+      drawDivider,
       resetSummaryCards,
-      addSummaryCard,
+      drawSummaryCard,
       finishSummaryCards,
-      addDivider,
-      drawWrappedText,
-      getY,
-      setY,
+      writeParagraph,
       addPageIfNeeded,
       margin,
       contentWidth,
-    } = ctx
+      getY,
+      setY,
+    } = await createPdfEngine('OBSERVAÇÕES E PENDÊNCIAS', 'Relatório filtrado por status, unidade e etapa')
 
-    labelValue('Obra', project.name || '-')
-    labelValue('Cliente', project.client_name || '-')
-    labelValue('Cidade', project.city || '-')
-    labelValue('Status filtrado', statusFilter ? statusLabel(statusFilter) : 'Todos')
-    labelValue(
+    drawLabelValue('Obra', project.name || '-')
+    drawLabelValue('Cliente', project.client_name || '-')
+    drawLabelValue('Cidade', project.city || '-')
+    drawLabelValue('Status filtrado', statusFilter ? statusLabel(statusFilter) : 'Todos')
+    drawLabelValue(
       'Etapas filtradas',
       stageFilter.length > 0
         ? stages.filter((s) => stageFilter.includes(s.id)).map((s) => s.name).join(', ')
         : 'Todas'
     )
-    labelValue('Texto pesquisado', textFilter || '-')
-    labelValue('Somente com observação', onlyWithObservation ? 'Sim' : 'Não')
+    drawLabelValue('Texto pesquisado', textFilter || '-')
+    drawLabelValue('Somente com observação', onlyWithObservation ? 'Sim' : 'Não')
 
     setY(getY() + 3)
 
-    sectionTitle('Resumo do relatório')
+    drawSectionTitle('Resumo do relatório')
     resetSummaryCards()
-    addSummaryCard('Total filtrado', observationSummary.total)
-    addSummaryCard('Pendentes', observationSummary.pending)
-    addSummaryCard('Em andamento', observationSummary.in_progress)
-    addSummaryCard('Concluídas', observationSummary.done)
-    addSummaryCard('Com observação', observationSummary.with_notes)
+    drawSummaryCard('Total filtrado', observationSummary.total)
+    drawSummaryCard('Pendentes', observationSummary.pending)
+    drawSummaryCard('Em andamento', observationSummary.in_progress)
+    drawSummaryCard('Concluídas', observationSummary.done)
+    drawSummaryCard('Com observação', observationSummary.with_notes)
     finishSummaryCards()
-    setY(getY() + 6)
+    setY(getY() + 4)
 
-    sectionTitle('Itens encontrados')
+    drawSectionTitle('Itens encontrados')
 
     if (filteredObservationRows.length === 0) {
-      pdf.setFont('helvetica', 'italic')
-      pdf.setFontSize(10)
-      pdf.text('Nenhum registro encontrado com os filtros selecionados.', margin, getY())
-      setY(getY() + 8)
+      writeParagraph('Nenhum registro encontrado com os filtros selecionados.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
     } else {
       filteredObservationRows.forEach((row) => {
-        addPageIfNeeded(28)
+        addPageIfNeeded(34)
 
         pdf.setFillColor(245, 245, 245)
         pdf.rect(margin, getY(), contentWidth, 9, 'F')
@@ -1151,34 +1173,27 @@ export default function ObraRelatoriosPage() {
         pdf.text(`Unidade ${safeStr(row.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
         setY(getY() + 14)
 
-        labelValue('Etapa', row.stage_display_name)
-        labelValue('Status', statusLabel(row.status))
+        drawLabelValue('Etapa', row.stage_display_name)
+        drawLabelValue('Status', statusLabel(row.status))
 
         const relatedLogs = logs
           .filter((log) => log.unit_stage_id === row.id)
           .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
         const latestLog = relatedLogs[0] || null
 
-        labelValue('Última atualização', latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-')
+        drawLabelValue('Última atualização', latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-')
 
-        addPageIfNeeded(16)
-        pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(10)
-        pdf.text('Observação', margin, getY())
-        setY(getY() + 8)
+        drawSectionTitle('Observação')
+        writeParagraph(safeStr(row.notes).trim() || 'Sem observação', { fontSize: 9, lineHeight: 11, bottomGap: 2 })
 
-        pdf.setFont('helvetica', 'normal')
-        pdf.setFontSize(9)
-        setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 9.4) + 2)
-
-        setY(getY() + 3)
-        addDivider()
+        drawDivider()
       })
     }
 
     pdf.save(reportFileName(project.name, 'observacoes_e_pendencias'))
   }
-    async function exportCurrentReportToPdf() {
+
+  async function exportCurrentReportToPdf() {
     if (!project) return
 
     setExportingPdf(true)
@@ -1336,60 +1351,6 @@ export default function ObraRelatoriosPage() {
             <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div></div>
             <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div></div>
           </div>
-
-          <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Diário de obra — {formatDate(`${diaryDate}T12:00:00`)}</div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.
-            </div>
-
-            {diaryBlocks.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhuma movimentação encontrada nesta data.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 14 }}>
-                {diaryBlocks.map((block) => (
-                  <div key={block.unit_stage_id} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fafafa' }}>
-                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
-                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Etapa:</b> {block.stage_name}</div>
-                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Status atual:</b> {statusLabel(block.status)}</div>
-                    {block.started_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><b>Início:</b> {formatDateTime(block.started_at)}</div> : null}
-                    {block.finished_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><b>Conclusão:</b> {formatDateTime(block.finished_at)}</div> : null}
-                    {block.started_at && block.finished_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><b>Duração:</b> {durationLabel(block.started_at, block.finished_at)}</div> : null}
-                    {block.events.length > 0 ? (
-                      <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades registradas no dia</div>
-                        <div style={{ display: 'grid', gap: 6 }}>
-                          {block.events.map((event, index) => (
-                            <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
-                              • {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}{event.user_name ? ` (${event.user_name})` : ''}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {safeStr(block.notes).trim() ? (
-                      <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div>
-                        <div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div>
-                      </div>
-                    ) : null}
-                    {block.photos.length > 0 ? (
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Fotos registradas na data</div>
-                        <div style={{ display: 'grid', gap: 8 }}>
-                          {block.photos.map((photo) => (
-                            <div key={photo.id} style={{ fontSize: 13, color: '#444' }}>
-                              • {formatDate(photo.created_at)} {formatTime(photo.created_at)} — {getPhotoKindLabel(photo.kind)}{photo.user_name ? ` (${photo.user_name})` : ''}{safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         </>
       )}
 
@@ -1398,52 +1359,15 @@ export default function ObraRelatoriosPage() {
           <div style={{ ...cardStyle, marginBottom: 18 }}>
             <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} /></div>
-              <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} /></div>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros no período</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div></div>
-          </div>
-
-          <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Resumo do período — {formatDate(`${startDate}T12:00:00`)} até {formatDate(`${endDate}T12:00:00`)}</div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório cronológico das atividades registradas no período.</div>
-            {periodBlocks.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhuma movimentação encontrada no período selecionado.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 14 }}>
-                {periodBlocks.map((block) => (
-                  <div key={block.unit_stage_id} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fafafa' }}>
-                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
-                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Etapa:</b> {block.stage_name}</div>
-                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Status atual:</b> {statusLabel(block.status)}</div>
-                    {block.events.length > 0 ? (
-                      <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades do período</div>
-                        <div style={{ display: 'grid', gap: 6 }}>
-                          {block.events.map((event, index) => (
-                            <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
-                              • {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}{event.user_name ? ` (${event.user_name})` : ''}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {safeStr(block.notes).trim() ? (
-                      <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div>
-                        <div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div>
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
+                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
               </div>
-            )}
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
+                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
           </div>
         </>
       )}
@@ -1500,7 +1424,6 @@ export default function ObraRelatoriosPage() {
                     </button>
                   </div>
                 </div>
-
                 <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
                   {stages.map((stage) => (
                     <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
@@ -1512,53 +1435,253 @@ export default function ObraRelatoriosPage() {
               </div>
             </div>
           </div>
+        </>
+      )}
+    </div>
+  )
+}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Pendentes</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Em andamento</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Com observação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div></div>
+  async function exportCurrentReportToPdf() {
+    if (!project) return
+
+    setExportingPdf(true)
+    try {
+      if (mode === REPORT_MODE.diary) {
+        await generateDiaryPdf()
+      } else if (mode === REPORT_MODE.period) {
+        await generatePeriodPdf()
+      } else {
+        await generateObservationsPdf()
+      }
+    } catch (error) {
+      console.error(error)
+      alert(`Erro ao gerar PDF: ${error?.message || error}`)
+    } finally {
+      setExportingPdf(false)
+    }
+  }
+
+  async function rerun() {
+    setRunning(true)
+    try {
+      await loadBaseData()
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  function toggleMultiValue(setter, currentValues, value) {
+    if (!value) return
+    if (currentValues.includes(value)) setter(currentValues.filter((v) => v !== value))
+    else setter([...currentValues, value])
+  }
+
+  if (loading) {
+    return <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>Carregando...</div>
+  }
+
+  if (!project) {
+    return (
+      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        <div style={{ marginBottom: 12 }}>Obra não encontrada.</div>
+        <Link href="/obras">← Voltar</Link>
+      </div>
+    )
+  }
+
+  const cardStyle = {
+    border: '1px solid #eee',
+    borderRadius: 16,
+    padding: 16,
+    background: '#fff',
+    boxShadow: '0 6px 18px rgba(0,0,0,0.05)',
+  }
+
+  const inputStyle = {
+    width: '100%',
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: '1px solid #ddd',
+    outline: 'none',
+    background: '#fff',
+  }
+
+  const buttonStyle = {
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: '1px solid #ddd',
+    background: '#111',
+    color: '#fff',
+    cursor: 'pointer',
+    fontWeight: 800,
+  }
+
+  const softButtonStyle = {
+    padding: '10px 12px',
+    borderRadius: 12,
+    border: '1px solid #ddd',
+    background: '#fff',
+    color: '#111',
+    cursor: 'pointer',
+    fontWeight: 800,
+  }
+
+  return (
+    <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Relatórios da obra</div>
+          <h1 style={{ margin: 0 }}>{project.name || '(Sem nome)'}</h1>
+          <div style={{ marginTop: 8, fontSize: 13, color: '#555' }}>
+            {project.client_name ? <b>{project.client_name}</b> : null}
+            {project.client_name && project.city ? ' • ' : null}
+            {project.city || ''}
+            {project.address ? ` • ${project.address}` : ''}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" onClick={rerun} disabled={running} style={buttonStyle}>
+            {running ? 'Atualizando...' : 'Atualizar relatório'}
+          </button>
+          <button type="button" onClick={exportCurrentReportToPdf} disabled={exportingPdf} style={buttonStyle}>
+            {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
+          </button>
+          <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }}>
+            ← Voltar para obra
+          </Link>
+        </div>
+      </div>
+
+      <hr style={{ margin: '18px 0' }} />
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        <button
+          type="button"
+          onClick={() => setMode(REPORT_MODE.diary)}
+          style={{ ...softButtonStyle, background: mode === REPORT_MODE.diary ? '#111' : '#fff', color: mode === REPORT_MODE.diary ? '#fff' : '#111' }}
+        >
+          Diário de obra
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode(REPORT_MODE.period)}
+          style={{ ...softButtonStyle, background: mode === REPORT_MODE.period ? '#111' : '#fff', color: mode === REPORT_MODE.period ? '#fff' : '#111' }}
+        >
+          Resumo por período
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode(REPORT_MODE.observations)}
+          style={{ ...softButtonStyle, background: mode === REPORT_MODE.observations ? '#111' : '#fff', color: mode === REPORT_MODE.observations ? '#fff' : '#111' }}
+        >
+          Observações e pendências
+        </button>
+      </div>
+
+      {mode === REPORT_MODE.diary && (
+        <>
+          <div style={{ ...cardStyle, marginBottom: 18 }}>
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
+                <input type="date" value={diaryDate} onChange={(e) => setDiaryDate(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
           </div>
 
-          <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Observações e pendências</div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório filtrável por status, unidade, etapa e texto.</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div></div>
+          </div>
+        </>
+      )}
 
-            {filteredObservationRows.length === 0 ? (
-              <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
-                      <th style={{ padding: '10px 8px' }}>Unidade</th>
-                      <th style={{ padding: '10px 8px' }}>Etapa</th>
-                      <th style={{ padding: '10px 8px' }}>Status</th>
-                      <th style={{ padding: '10px 8px' }}>Observação</th>
-                      <th style={{ padding: '10px 8px' }}>Abrir</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredObservationRows.map((row) => (
-                      <tr key={row.id} style={{ borderBottom: '1px solid #f1f1f1', verticalAlign: 'top' }}>
-                        <td style={{ padding: '10px 8px', fontWeight: 700 }}>{row.unit?.identifier || '-'}</td>
-                        <td style={{ padding: '10px 8px' }}>{row.stage_display_name}</td>
-                        <td style={{ padding: '10px 8px' }}>{statusLabel(row.status)}</td>
-                        <td style={{ padding: '10px 8px', maxWidth: 420 }}>
-                          {safeStr(row.notes).trim() || <span style={{ color: '#999' }}>Sem observação</span>}
-                        </td>
-                        <td style={{ padding: '10px 8px' }}>
-                          <Link href={`/unidades/${row.unit_id}`} style={{ textDecoration: 'none' }}>
-                            Abrir unidade
-                          </Link>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+      {mode === REPORT_MODE.period && (
+        <>
+          <div style={{ ...cardStyle, marginBottom: 18 }}>
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
+                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
               </div>
-            )}
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
+                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {mode === REPORT_MODE.observations && (
+        <>
+          <div style={{ ...cardStyle, marginBottom: 18 }}>
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
+                  <option value="">Todos</option>
+                  <option value="pending">Pendente</option>
+                  <option value="in_progress">Em andamento</option>
+                  <option value="done">Concluída</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
+                <input type="text" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} placeholder="Buscar por unidade, etapa, observação..." style={inputStyle} />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+                <input type="checkbox" checked={onlyWithObservation} onChange={(e) => setOnlyWithObservation(e.target.checked)} />
+                Mostrar somente etapas com observação
+              </label>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
+                  {units.map((unit) => (
+                    <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                      <input type="checkbox" checked={unitFilter.includes(unit.id)} onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)} />
+                      Unidade {unit.identifier || '-'}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: '#666' }}>Filtrar por etapas</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button type="button" onClick={() => setStageFilter(stages.map((s) => s.id))} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
+                      Marcar todas
+                    </button>
+                    <button type="button" onClick={() => setStageFilter([])} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
+                  {stages.map((stage) => (
+                    <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                      <input type="checkbox" checked={stageFilter.includes(stage.id)} onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)} />
+                      {stage.name || '-'}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </>
       )}
