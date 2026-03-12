@@ -241,6 +241,7 @@ function calcFitSize(originalWidth, originalHeight, maxWidth, maxHeight) {
     height: originalHeight * ratio,
   }
 }
+
 async function createPdfEngine(title, subtitle) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const pageWidth = pdf.internal.pageSize.getWidth()
@@ -422,10 +423,10 @@ async function createPdfEngine(title, subtitle) {
         pdf.addImage(imageDataUrl, 'JPEG', margin, y, fit.width, fit.height)
         y += fit.height + 4
       } catch {
-        writeParagraph('Imagem não pôde ser renderizada.', { fontSize: 9, lineHeight: 10, bottomGap: 2 })
+        writeParagraph('Imagem não pôde ser renderizada.', { fontSize: 9, lineHeight: 10.5, bottomGap: 2 })
       }
     } else {
-      writeParagraph('Imagem não disponível para este registro.', { fontSize: 9, lineHeight: 10, bottomGap: 2 })
+      writeParagraph('Imagem não disponível para este registro.', { fontSize: 9, lineHeight: 10.5, bottomGap: 2 })
     }
 
     writeParagraph(
@@ -730,7 +731,7 @@ export default function ObraRelatoriosPage() {
       photos: [...block.photos].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
     }))
   }
-  const diaryLogs = useMemo(() => {
+    const diaryLogs = useMemo(() => {
     const from = startOfDayIso(diaryDate)
     const to = endOfDayIso(diaryDate)
     return logs.filter((row) => inRange(row.created_at, from, to))
@@ -1021,8 +1022,7 @@ export default function ObraRelatoriosPage() {
 
     pdf.save(reportFileName(project.name, `diario_de_obra_${safeStr(diaryDate)}`))
   }
-
-  async function generatePeriodPdf() {
+    async function generatePeriodPdf() {
     if (!project) return
 
     const {
@@ -1062,7 +1062,11 @@ export default function ObraRelatoriosPage() {
     drawSectionTitle(`Atividades do período ${formatDate(`${startDate}T12:00:00`)} até ${formatDate(`${endDate}T12:00:00`)}`)
 
     if (periodBlocks.length === 0) {
-      writeParagraph('Nenhuma movimentação encontrada no período selecionado.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
+      writeParagraph('Nenhuma movimentação encontrada no período selecionado.', {
+        fontSize: 10,
+        lineHeight: 10.5,
+        bottomGap: 2,
+      })
     } else {
       for (const block of periodBlocks) {
         addPageIfNeeded(42)
@@ -1078,7 +1082,9 @@ export default function ObraRelatoriosPage() {
         drawLabelValue('Status atual', statusLabel(block.status))
         if (block.started_at) drawLabelValue('Início', formatDateTime(block.started_at))
         if (block.finished_at) drawLabelValue('Conclusão', formatDateTime(block.finished_at))
-        if (block.started_at && block.finished_at) drawLabelValue('Duração', durationLabel(block.started_at, block.finished_at))
+        if (block.started_at && block.finished_at) {
+          drawLabelValue('Duração', durationLabel(block.started_at, block.finished_at))
+        }
 
         if (block.events.length > 0) {
           drawSectionTitle('Atividades registradas no período')
@@ -1100,8 +1106,13 @@ export default function ObraRelatoriosPage() {
     }
 
     drawSectionTitle('Consolidado por etapa')
+
     if (periodSummary.stages.length === 0) {
-      writeParagraph('Nenhum consolidado disponível para o período.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
+      writeParagraph('Nenhum consolidado disponível para o período.', {
+        fontSize: 10,
+        lineHeight: 10.5,
+        bottomGap: 2,
+      })
     } else {
       periodSummary.stages.forEach((row) => {
         drawLabelValue(
@@ -1161,7 +1172,11 @@ export default function ObraRelatoriosPage() {
     drawSectionTitle('Itens encontrados')
 
     if (filteredObservationRows.length === 0) {
-      writeParagraph('Nenhum registro encontrado com os filtros selecionados.', { fontSize: 10, lineHeight: 10.5, bottomGap: 2 })
+      writeParagraph('Nenhum registro encontrado com os filtros selecionados.', {
+        fontSize: 10,
+        lineHeight: 10.5,
+        bottomGap: 2,
+      })
     } else {
       filteredObservationRows.forEach((row) => {
         addPageIfNeeded(34)
@@ -1184,7 +1199,11 @@ export default function ObraRelatoriosPage() {
         drawLabelValue('Última atualização', latestLog?.created_at ? formatDateTime(latestLog.created_at) : '-')
 
         drawSectionTitle('Observação')
-        writeParagraph(safeStr(row.notes).trim() || 'Sem observação', { fontSize: 9, lineHeight: 11, bottomGap: 2 })
+        writeParagraph(safeStr(row.notes).trim() || 'Sem observação', {
+          fontSize: 9,
+          lineHeight: 11,
+          bottomGap: 2,
+        })
 
         drawDivider()
       })
@@ -1229,7 +1248,11 @@ export default function ObraRelatoriosPage() {
   }
 
   if (loading) {
-    return <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>Carregando...</div>
+    return (
+      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+        Carregando...
+      </div>
+    )
   }
 
   if (!project) {
@@ -1277,7 +1300,6 @@ export default function ObraRelatoriosPage() {
     cursor: 'pointer',
     fontWeight: 800,
   }
-
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
@@ -1311,21 +1333,35 @@ export default function ObraRelatoriosPage() {
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.diary)}
-          style={{ ...softButtonStyle, background: mode === REPORT_MODE.diary ? '#111' : '#fff', color: mode === REPORT_MODE.diary ? '#fff' : '#111' }}
+          style={{
+            ...softButtonStyle,
+            background: mode === REPORT_MODE.diary ? '#111' : '#fff',
+            color: mode === REPORT_MODE.diary ? '#fff' : '#111',
+          }}
         >
           Diário de obra
         </button>
+
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.period)}
-          style={{ ...softButtonStyle, background: mode === REPORT_MODE.period ? '#111' : '#fff', color: mode === REPORT_MODE.period ? '#fff' : '#111' }}
+          style={{
+            ...softButtonStyle,
+            background: mode === REPORT_MODE.period ? '#111' : '#fff',
+            color: mode === REPORT_MODE.period ? '#fff' : '#111',
+          }}
         >
           Resumo por período
         </button>
+
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.observations)}
-          style={{ ...softButtonStyle, background: mode === REPORT_MODE.observations ? '#111' : '#fff', color: mode === REPORT_MODE.observations ? '#fff' : '#111' }}
+          style={{
+            ...softButtonStyle,
+            background: mode === REPORT_MODE.observations ? '#111' : '#fff',
+            color: mode === REPORT_MODE.observations ? '#fff' : '#111',
+          }}
         >
           Observações e pendências
         </button>
@@ -1344,346 +1380,163 @@ export default function ObraRelatoriosPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div></div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div>
+            </div>
           </div>
         </>
       )}
 
       {mode === REPORT_MODE.period && (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-              </div>
+        <div style={{ ...cardStyle, marginBottom: 18 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
             </div>
           </div>
-        </>
+        </div>
       )}
 
       {mode === REPORT_MODE.observations && (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
-                  <option value="">Todos</option>
-                  <option value="pending">Pendente</option>
-                  <option value="in_progress">Em andamento</option>
-                  <option value="done">Concluída</option>
-                </select>
-              </div>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
-                <input type="text" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} placeholder="Buscar por unidade, etapa, observação..." style={inputStyle} />
-              </div>
+        <div style={{ ...cardStyle, marginBottom: 18 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
+                <option value="">Todos</option>
+                <option value="pending">Pendente</option>
+                <option value="in_progress">Em andamento</option>
+                <option value="done">Concluída</option>
+              </select>
             </div>
 
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-                <input type="checkbox" checked={onlyWithObservation} onChange={(e) => setOnlyWithObservation(e.target.checked)} />
-                Mostrar somente etapas com observação
-              </label>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
-                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
-                  {units.map((unit) => (
-                    <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                      <input type="checkbox" checked={unitFilter.includes(unit.id)} onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)} />
-                      Unidade {unit.identifier || '-'}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <div style={{ fontSize: 12, color: '#666' }}>Filtrar por etapas</div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button type="button" onClick={() => setStageFilter(stages.map((s) => s.id))} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
-                      Marcar todas
-                    </button>
-                    <button type="button" onClick={() => setStageFilter([])} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
-                      Limpar
-                    </button>
-                  </div>
-                </div>
-                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
-                  {stages.map((stage) => (
-                    <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                      <input type="checkbox" checked={stageFilter.includes(stage.id)} onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)} />
-                      {stage.name || '-'}
-                    </label>
-                  ))}
-                </div>
-              </div>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
+              <input
+                type="text"
+                value={textFilter}
+                onChange={(e) => setTextFilter(e.target.value)}
+                placeholder="Buscar por unidade, etapa, observação..."
+                style={inputStyle}
+              />
             </div>
           </div>
-        </>
-      )}
-    </div>
-  )
-}
 
-  async function exportCurrentReportToPdf() {
-    if (!project) return
-
-    setExportingPdf(true)
-    try {
-      if (mode === REPORT_MODE.diary) {
-        await generateDiaryPdf()
-      } else if (mode === REPORT_MODE.period) {
-        await generatePeriodPdf()
-      } else {
-        await generateObservationsPdf()
-      }
-    } catch (error) {
-      console.error(error)
-      alert(`Erro ao gerar PDF: ${error?.message || error}`)
-    } finally {
-      setExportingPdf(false)
-    }
-  }
-
-  async function rerun() {
-    setRunning(true)
-    try {
-      await loadBaseData()
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  function toggleMultiValue(setter, currentValues, value) {
-    if (!value) return
-    if (currentValues.includes(value)) setter(currentValues.filter((v) => v !== value))
-    else setter([...currentValues, value])
-  }
-
-  if (loading) {
-    return <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>Carregando...</div>
-  }
-
-  if (!project) {
-    return (
-      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-        <div style={{ marginBottom: 12 }}>Obra não encontrada.</div>
-        <Link href="/obras">← Voltar</Link>
-      </div>
-    )
-  }
-
-  const cardStyle = {
-    border: '1px solid #eee',
-    borderRadius: 16,
-    padding: 16,
-    background: '#fff',
-    boxShadow: '0 6px 18px rgba(0,0,0,0.05)',
-  }
-
-  const inputStyle = {
-    width: '100%',
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    outline: 'none',
-    background: '#fff',
-  }
-
-  const buttonStyle = {
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    background: '#111',
-    color: '#fff',
-    cursor: 'pointer',
-    fontWeight: 800,
-  }
-
-  const softButtonStyle = {
-    padding: '10px 12px',
-    borderRadius: 12,
-    border: '1px solid #ddd',
-    background: '#fff',
-    color: '#111',
-    cursor: 'pointer',
-    fontWeight: 800,
-  }
-
-  return (
-    <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Relatórios da obra</div>
-          <h1 style={{ margin: 0 }}>{project.name || '(Sem nome)'}</h1>
-          <div style={{ marginTop: 8, fontSize: 13, color: '#555' }}>
-            {project.client_name ? <b>{project.client_name}</b> : null}
-            {project.client_name && project.city ? ' • ' : null}
-            {project.city || ''}
-            {project.address ? ` • ${project.address}` : ''}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+              <input
+                type="checkbox"
+                checked={onlyWithObservation}
+                onChange={(e) => setOnlyWithObservation(e.target.checked)}
+              />
+              Mostrar somente etapas com observação
+            </label>
           </div>
-        </div>
 
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" onClick={rerun} disabled={running} style={buttonStyle}>
-            {running ? 'Atualizando...' : 'Atualizar relatório'}
-          </button>
-          <button type="button" onClick={exportCurrentReportToPdf} disabled={exportingPdf} style={buttonStyle}>
-            {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
-          </button>
-          <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }}>
-            ← Voltar para obra
-          </Link>
-        </div>
-      </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
+              <div
+                style={{
+                  border: '1px solid #eee',
+                  borderRadius: 12,
+                  padding: 10,
+                  background: '#fafafa',
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                {units.map((unit) => (
+                  <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                    <input
+                      type="checkbox"
+                      checked={unitFilter.includes(unit.id)}
+                      onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)}
+                    />
+                    Unidade {unit.identifier || '-'}
+                  </label>
+                ))}
+              </div>
+            </div>
 
-      <hr style={{ margin: '18px 0' }} />
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 12, color: '#666' }}>Filtrar por etapas</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => setStageFilter(stages.map((s) => s.id))}
+                    style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}
+                  >
+                    Marcar todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStageFilter([])}
+                    style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}
+                  >
+                    Limpar
+                  </button>
+                </div>
+              </div>
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
-        <button
-          type="button"
-          onClick={() => setMode(REPORT_MODE.diary)}
-          style={{ ...softButtonStyle, background: mode === REPORT_MODE.diary ? '#111' : '#fff', color: mode === REPORT_MODE.diary ? '#fff' : '#111' }}
-        >
-          Diário de obra
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode(REPORT_MODE.period)}
-          style={{ ...softButtonStyle, background: mode === REPORT_MODE.period ? '#111' : '#fff', color: mode === REPORT_MODE.period ? '#fff' : '#111' }}
-        >
-          Resumo por período
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode(REPORT_MODE.observations)}
-          style={{ ...softButtonStyle, background: mode === REPORT_MODE.observations ? '#111' : '#fff', color: mode === REPORT_MODE.observations ? '#fff' : '#111' }}
-        >
-          Observações e pendências
-        </button>
-      </div>
-
-      {mode === REPORT_MODE.diary && (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
-                <input type="date" value={diaryDate} onChange={(e) => setDiaryDate(e.target.value)} style={inputStyle} />
+              <div
+                style={{
+                  border: '1px solid #eee',
+                  borderRadius: 12,
+                  padding: 10,
+                  background: '#fafafa',
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                {stages.map((stage) => (
+                  <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+                    <input
+                      type="checkbox"
+                      checked={stageFilter.includes(stage.id)}
+                      onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)}
+                    />
+                    {stage.name || '-'}
+                  </label>
+                ))}
               </div>
             </div>
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div></div>
-            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div></div>
-          </div>
-        </>
-      )}
-
-      {mode === REPORT_MODE.period && (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
-      {mode === REPORT_MODE.observations && (
-        <>
-          <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
-                  <option value="">Todos</option>
-                  <option value="pending">Pendente</option>
-                  <option value="in_progress">Em andamento</option>
-                  <option value="done">Concluída</option>
-                </select>
-              </div>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
-                <input type="text" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} placeholder="Buscar por unidade, etapa, observação..." style={inputStyle} />
-              </div>
-            </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-                <input type="checkbox" checked={onlyWithObservation} onChange={(e) => setOnlyWithObservation(e.target.checked)} />
-                Mostrar somente etapas com observação
-              </label>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
-                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
-                  {units.map((unit) => (
-                    <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                      <input type="checkbox" checked={unitFilter.includes(unit.id)} onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)} />
-                      Unidade {unit.identifier || '-'}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <div style={{ fontSize: 12, color: '#666' }}>Filtrar por etapas</div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button type="button" onClick={() => setStageFilter(stages.map((s) => s.id))} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
-                      Marcar todas
-                    </button>
-                    <button type="button" onClick={() => setStageFilter([])} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
-                      Limpar
-                    </button>
-                  </div>
-                </div>
-                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
-                  {stages.map((stage) => (
-                    <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                      <input type="checkbox" checked={stageFilter.includes(stage.id)} onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)} />
-                      {stage.name || '-'}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </>
+        </div>
       )}
     </div>
   )
