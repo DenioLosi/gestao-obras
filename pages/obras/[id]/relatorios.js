@@ -140,7 +140,6 @@ function actionToHuman(log) {
   }
 
   if (action === 'photo_added') return 'Foto registrada'
-
   return ''
 }
 
@@ -148,7 +147,6 @@ function durationLabel(startValue, endValue) {
   if (!startValue || !endValue) return ''
   const start = new Date(startValue).getTime()
   const end = new Date(endValue).getTime()
-
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return ''
 
   const diffMs = end - start
@@ -233,6 +231,7 @@ async function buildPdf(title, subtitle) {
   const pageHeight = pdf.internal.pageSize.getHeight()
   const margin = 12
   const contentWidth = pageWidth - margin * 2
+  const valueXOffset = 45
   let y = margin
 
   let logoDataUrl = null
@@ -247,7 +246,7 @@ async function buildPdf(title, subtitle) {
     }
   }
 
-  function drawWrappedText(text, x, topY, maxWidth, lineHeight = 9.2) {
+  function drawWrappedText(text, x, topY, maxWidth, lineHeight = 9.6) {
     const lines = pdf.splitTextToSize(safeStr(text), maxWidth)
     pdf.text(lines, x, topY, { baseline: 'top' })
     return lines.length * lineHeight
@@ -272,7 +271,13 @@ async function buildPdf(title, subtitle) {
 
     pdf.setFont('helvetica', 'normal')
     pdf.setFontSize(9)
-    const used = drawWrappedText(safeStr(value) || '-', margin + 34, y - 1, contentWidth - 34, 8.8)
+    const used = drawWrappedText(
+      safeStr(value) || '-',
+      margin + valueXOffset,
+      y - 1,
+      contentWidth - valueXOffset,
+      9.4
+    )
     y += Math.max(8, used + 2)
   }
 
@@ -427,7 +432,6 @@ export default function ObraRelatoriosPage() {
     if (!projectId) return
 
     setLoading(true)
-
     const currentUser = await ensureAuth()
     if (!currentUser) return
 
@@ -463,23 +467,19 @@ export default function ObraRelatoriosPage() {
         .select('id, project_id, identifier, status, progress, is_active')
         .eq('project_id', projectId)
         .order('identifier', { ascending: true }),
-
       supabase
         .from('stages')
         .select('id, project_id, name, order_index, is_active')
         .eq('project_id', projectId)
         .order('order_index', { ascending: true }),
-
       supabase
         .from('unit_stages')
         .select('id, unit_id, stage_id, status, notes, custom_name, order_index, is_active')
         .order('order_index', { ascending: true }),
-
       supabase
         .from('unit_stage_logs')
         .select('id, unit_stage_id, user_id, action, old_value, new_value, created_at')
         .order('created_at', { ascending: false }),
-
       supabase
         .from('unit_stage_photos')
         .select('id, unit_stage_id, user_id, kind, path, caption, created_at')
@@ -508,26 +508,17 @@ export default function ObraRelatoriosPage() {
     const unitIds = new Set(unitsRows.map((u) => u.id))
     const stageIds = new Set(stagesRows.map((s) => s.id))
 
-    const unitStagesRows = unitStagesRowsRaw.filter(
-      (row) => unitIds.has(row.unit_id) && stageIds.has(row.stage_id)
-    )
-
+    const unitStagesRows = unitStagesRowsRaw.filter((row) => unitIds.has(row.unit_id) && stageIds.has(row.stage_id))
     const unitStageIds = new Set(unitStagesRows.map((row) => row.id))
 
     const logsRows = logsRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
     const photosRows = photosRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
 
-    const userIds = Array.from(
-      new Set([...logsRows.map((x) => x.user_id), ...photosRows.map((x) => x.user_id)].filter(Boolean))
-    )
-
+    const userIds = Array.from(new Set([...logsRows.map((x) => x.user_id), ...photosRows.map((x) => x.user_id)].filter(Boolean)))
     let nextProfilesMap = {}
-    if (userIds.length > 0) {
-      const { data: profileRows } = await supabase
-        .from('profiles')
-        .select('id, full_name, email')
-        .in('id', userIds)
 
+    if (userIds.length > 0) {
+      const { data: profileRows } = await supabase.from('profiles').select('id, full_name, email').in('id', userIds)
       nextProfilesMap = buildMap(profileRows || [])
     }
 
@@ -558,10 +549,7 @@ export default function ObraRelatoriosPage() {
       if (!unitStageId) return
 
       if (!map[unitStageId]) {
-        map[unitStageId] = {
-          started_at: null,
-          finished_at: null,
-        }
+        map[unitStageId] = { started_at: null, finished_at: null }
       }
 
       if (log.action === 'status_changed') {
@@ -569,10 +557,7 @@ export default function ObraRelatoriosPage() {
         const toStatus = newStatusFromLog(log)
 
         if (!map[unitStageId].started_at) {
-          if (
-            (fromStatus === 'pending' && toStatus === 'in_progress') ||
-            (fromStatus === 'pending' && toStatus === 'done')
-          ) {
+          if ((fromStatus === 'pending' && toStatus === 'in_progress') || (fromStatus === 'pending' && toStatus === 'done')) {
             map[unitStageId].started_at = log.created_at
           }
         }
@@ -601,7 +586,6 @@ export default function ObraRelatoriosPage() {
 
       if (!blockMap[unitStageId]) {
         const timeline = stageTimelineByUnitStageId[unitStageId] || {}
-
         blockMap[unitStageId] = {
           unit_stage_id: unitStageId,
           unit,
@@ -622,7 +606,6 @@ export default function ObraRelatoriosPage() {
     logRows.forEach((log) => {
       const block = ensureBlock(log.unit_stage_id)
       if (!block) return
-
       const human = actionToHuman(log)
       if (!human) return
 
@@ -638,12 +621,7 @@ export default function ObraRelatoriosPage() {
       if (!block) return
 
       const userName = collectUserName(profilesMap, photo.user_id)
-
-      block.photos.push({
-        ...photo,
-        user_name: userName,
-      })
-
+      block.photos.push({ ...photo, user_name: userName })
       block.events.push({
         created_at: photo.created_at,
         text: getPhotoKindLabel(photo.kind),
@@ -749,28 +727,18 @@ export default function ObraRelatoriosPage() {
       if (log.action === 'status_changed') {
         const fromStatus = oldStatusFromLog(log)
         const toStatus = newStatusFromLog(log)
-
-        if (fromStatus === 'pending' && toStatus === 'in_progress') {
-          stageCounters[key].started += 1
-        }
-
-        if (toStatus === 'done') {
-          stageCounters[key].finished += 1
-        }
+        if (fromStatus === 'pending' && toStatus === 'in_progress') stageCounters[key].started += 1
+        if (toStatus === 'done') stageCounters[key].finished += 1
       }
 
-      if (log.action === 'notes_updated') {
-        stageCounters[key].observations += 1
-      }
+      if (log.action === 'notes_updated') stageCounters[key].observations += 1
     })
 
     return {
       moved_units: unitIds.size,
       total_logs: periodLogs.length,
       total_photos: periodPhotos.length,
-      stages: Object.values(stageCounters).sort((a, b) =>
-        safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')
-      ),
+      stages: Object.values(stageCounters).sort((a, b) => safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')),
     }
   }, [periodLogs, periodPhotos, unitStagesById, stagesById])
 
@@ -784,7 +752,6 @@ export default function ObraRelatoriosPage() {
     }
 
     let progressSum = 0
-
     units.forEach((unit) => {
       const status = normalizeStatus(unit.status)
       if (status === 'pending') counts.pending += 1
@@ -801,7 +768,6 @@ export default function ObraRelatoriosPage() {
     return unitStages.map((row) => {
       const unit = unitsById[row.unit_id] || null
       const stage = stagesById[row.stage_id] || null
-
       return {
         ...row,
         unit,
@@ -824,15 +790,9 @@ export default function ObraRelatoriosPage() {
         if (onlyWithObservation && !safeStr(row.notes).trim()) return false
 
         if (text) {
-          const joined = [
-            safeStr(row.unit?.identifier),
-            safeStr(row.stage_display_name),
-            safeStr(row.notes),
-            safeStr(row.status),
-          ]
+          const joined = [safeStr(row.unit?.identifier), safeStr(row.stage_display_name), safeStr(row.notes), safeStr(row.status)]
             .join(' ')
             .toLowerCase()
-
           if (!joined.includes(text)) return false
         }
 
@@ -926,9 +886,7 @@ export default function ObraRelatoriosPage() {
         labelValue('Status atual', statusLabel(block.status))
         if (block.started_at) labelValue('Início', formatDateTime(block.started_at))
         if (block.finished_at) labelValue('Conclusão', formatDateTime(block.finished_at))
-        if (block.started_at && block.finished_at) {
-          labelValue('Duração', durationLabel(block.started_at, block.finished_at))
-        }
+        if (block.started_at && block.finished_at) labelValue('Duração', durationLabel(block.started_at, block.finished_at))
 
         if (block.events.length > 0) {
           addPageIfNeeded(14)
@@ -939,13 +897,11 @@ export default function ObraRelatoriosPage() {
 
           pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(9)
-
           block.events.forEach((event) => {
             addPageIfNeeded(10)
             const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.2) + 1)
+            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.4) + 1)
           })
-
           setY(getY() + 2)
         }
 
@@ -958,7 +914,7 @@ export default function ObraRelatoriosPage() {
 
           pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(9)
-          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.2) + 2)
+          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.4) + 2)
         }
 
         if (block.photos.length > 0) {
@@ -977,7 +933,7 @@ export default function ObraRelatoriosPage() {
             }
 
             if (imageDataUrl) {
-              addPageIfNeeded(72)
+              addPageIfNeeded(74)
               pdf.setFont('helvetica', 'bold')
               pdf.setFontSize(9)
               pdf.text(getPhotoKindLabel(photo.kind), margin, getY())
@@ -995,12 +951,7 @@ export default function ObraRelatoriosPage() {
               pdf.setFont('helvetica', 'normal')
               pdf.setFontSize(8.5)
               const meta = `${formatDate(photo.created_at)} ${formatTime(photo.created_at)}${photo.user_name ? ` - ${photo.user_name}` : ''}${safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}`
-              setY(getY() + drawWrappedText(meta, margin, getY(), contentWidth, 8) + 3)
-            } else {
-              pdf.setFont('helvetica', 'normal')
-              pdf.setFontSize(9)
-              const txt = `${formatDate(photo.created_at)} ${formatTime(photo.created_at)} - ${getPhotoKindLabel(photo.kind)}${photo.user_name ? ` (${photo.user_name})` : ''}${safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}`
-              setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.2) + 1)
+              setY(getY() + drawWrappedText(meta, margin, getY(), contentWidth, 8.4) + 3)
             }
           }
         }
@@ -1086,9 +1037,7 @@ export default function ObraRelatoriosPage() {
         labelValue('Status atual', statusLabel(block.status))
         if (block.started_at) labelValue('Início', formatDateTime(block.started_at))
         if (block.finished_at) labelValue('Conclusão', formatDateTime(block.finished_at))
-        if (block.started_at && block.finished_at) {
-          labelValue('Duração', durationLabel(block.started_at, block.finished_at))
-        }
+        if (block.started_at && block.finished_at) labelValue('Duração', durationLabel(block.started_at, block.finished_at))
 
         if (block.events.length > 0) {
           addPageIfNeeded(14)
@@ -1099,13 +1048,11 @@ export default function ObraRelatoriosPage() {
 
           pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(9)
-
           block.events.forEach((event) => {
             addPageIfNeeded(10)
             const txt = `${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`
-            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.2) + 1)
+            setY(getY() + drawWrappedText(`• ${txt}`, margin + 2, getY(), contentWidth - 2, 9.4) + 1)
           })
-
           setY(getY() + 2)
         }
 
@@ -1118,7 +1065,7 @@ export default function ObraRelatoriosPage() {
 
           pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(9)
-          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.2) + 2)
+          setY(getY() + drawWrappedText(block.notes, margin, getY(), contentWidth, 9.4) + 2)
         }
 
         setY(getY() + 3)
@@ -1127,7 +1074,6 @@ export default function ObraRelatoriosPage() {
     }
 
     sectionTitle('Consolidado por etapa')
-
     if (periodSummary.stages.length === 0) {
       pdf.setFont('helvetica', 'italic')
       pdf.setFontSize(10)
@@ -1135,10 +1081,7 @@ export default function ObraRelatoriosPage() {
       setY(getY() + 8)
     } else {
       periodSummary.stages.forEach((row) => {
-        labelValue(
-          row.stage_name,
-          `Iniciadas: ${row.started} | Concluídas: ${row.finished} | Observações: ${row.observations}`
-        )
+        labelValue(row.stage_name, `Iniciadas: ${row.started} | Concluídas: ${row.finished} | Observações: ${row.observations}`)
       })
     }
 
@@ -1172,10 +1115,7 @@ export default function ObraRelatoriosPage() {
     labelValue(
       'Etapas filtradas',
       stageFilter.length > 0
-        ? stages
-            .filter((s) => stageFilter.includes(s.id))
-            .map((s) => s.name)
-            .join(', ')
+        ? stages.filter((s) => stageFilter.includes(s.id)).map((s) => s.name).join(', ')
         : 'Todas'
     )
     labelValue('Texto pesquisado', textFilter || '-')
@@ -1229,7 +1169,7 @@ export default function ObraRelatoriosPage() {
 
         pdf.setFont('helvetica', 'normal')
         pdf.setFontSize(9)
-        setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 9.2) + 2)
+        setY(getY() + drawWrappedText(safeStr(row.notes).trim() || 'Sem observação', margin, getY(), contentWidth, 9.4) + 2)
 
         setY(getY() + 3)
         addDivider()
@@ -1247,7 +1187,7 @@ export default function ObraRelatoriosPage() {
         await generateDiaryPdf()
       } else if (mode === REPORT_MODE.period) {
         await generatePeriodPdf()
-      } else if (mode === REPORT_MODE.observations) {
+      } else {
         await generateObservationsPdf()
       }
     } catch (error) {
@@ -1269,19 +1209,12 @@ export default function ObraRelatoriosPage() {
 
   function toggleMultiValue(setter, currentValues, value) {
     if (!value) return
-    if (currentValues.includes(value)) {
-      setter(currentValues.filter((v) => v !== value))
-    } else {
-      setter([...currentValues, value])
-    }
+    if (currentValues.includes(value)) setter(currentValues.filter((v) => v !== value))
+    else setter([...currentValues, value])
   }
 
   if (loading) {
-    return (
-      <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
-        Carregando...
-      </div>
-    )
+    return <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>Carregando...</div>
   }
 
   if (!project) {
@@ -1348,11 +1281,9 @@ export default function ObraRelatoriosPage() {
           <button type="button" onClick={rerun} disabled={running} style={buttonStyle}>
             {running ? 'Atualizando...' : 'Atualizar relatório'}
           </button>
-
           <button type="button" onClick={exportCurrentReportToPdf} disabled={exportingPdf} style={buttonStyle}>
             {exportingPdf ? 'Gerando PDF...' : 'Gerar PDF'}
           </button>
-
           <Link href={`/obras/${project.id}`} style={{ textDecoration: 'none' }}>
             ← Voltar para obra
           </Link>
@@ -1365,45 +1296,30 @@ export default function ObraRelatoriosPage() {
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.diary)}
-          style={{
-            ...softButtonStyle,
-            background: mode === REPORT_MODE.diary ? '#111' : '#fff',
-            color: mode === REPORT_MODE.diary ? '#fff' : '#111',
-          }}
+          style={{ ...softButtonStyle, background: mode === REPORT_MODE.diary ? '#111' : '#fff', color: mode === REPORT_MODE.diary ? '#fff' : '#111' }}
         >
           Diário de obra
         </button>
-
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.period)}
-          style={{
-            ...softButtonStyle,
-            background: mode === REPORT_MODE.period ? '#111' : '#fff',
-            color: mode === REPORT_MODE.period ? '#fff' : '#111',
-          }}
+          style={{ ...softButtonStyle, background: mode === REPORT_MODE.period ? '#111' : '#fff', color: mode === REPORT_MODE.period ? '#fff' : '#111' }}
         >
           Resumo por período
         </button>
-
         <button
           type="button"
           onClick={() => setMode(REPORT_MODE.observations)}
-          style={{
-            ...softButtonStyle,
-            background: mode === REPORT_MODE.observations ? '#111' : '#fff',
-            color: mode === REPORT_MODE.observations ? '#fff' : '#111',
-          }}
+          style={{ ...softButtonStyle, background: mode === REPORT_MODE.observations ? '#111' : '#fff', color: mode === REPORT_MODE.observations ? '#fff' : '#111' }}
         >
           Observações e pendências
         </button>
       </div>
 
-      {mode === REPORT_MODE.diary ? (
+      {mode === REPORT_MODE.diary && (
         <>
           <div style={{ ...cardStyle, marginBottom: 18 }}>
             <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do diário</div>
-
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
               <div>
                 <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data</div>
@@ -1413,36 +1329,16 @@ export default function ObraRelatoriosPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div>
-            </div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_photos}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.started}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.finished}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div></div>
           </div>
 
           <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Diário de obra — {formatDate(`${diaryDate}T12:00:00`)}
-            </div>
+            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Diário de obra — {formatDate(`${diaryDate}T12:00:00`)}</div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
               Relatório automático com base nas movimentações, observações e fotos lançadas na data selecionada.
             </div>
@@ -1452,81 +1348,38 @@ export default function ObraRelatoriosPage() {
             ) : (
               <div style={{ display: 'grid', gap: 14 }}>
                 {diaryBlocks.map((block) => (
-                  <div
-                    key={block.unit_stage_id}
-                    style={{
-                      border: '1px solid #eee',
-                      borderRadius: 14,
-                      padding: 14,
-                      background: '#fafafa',
-                    }}
-                  >
-                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
-                      Unidade {safeStr(block.unit?.identifier) || '-'}
-                    </div>
-
-                    <div style={{ fontSize: 14, marginBottom: 6 }}>
-                      <b>Etapa:</b> {block.stage_name}
-                    </div>
-
-                    <div style={{ fontSize: 14, marginBottom: 6 }}>
-                      <b>Status atual:</b> {statusLabel(block.status)}
-                    </div>
-
-                    {block.started_at ? (
-                      <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}>
-                        <b>Início:</b> {formatDateTime(block.started_at)}
-                      </div>
-                    ) : null}
-
-                    {block.finished_at ? (
-                      <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}>
-                        <b>Conclusão:</b> {formatDateTime(block.finished_at)}
-                      </div>
-                    ) : null}
-
-                    {block.started_at && block.finished_at ? (
-                      <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}>
-                        <b>Duração:</b> {durationLabel(block.started_at, block.finished_at)}
-                      </div>
-                    ) : null}
-
+                  <div key={block.unit_stage_id} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fafafa' }}>
+                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Etapa:</b> {block.stage_name}</div>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Status atual:</b> {statusLabel(block.status)}</div>
+                    {block.started_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><b>Início:</b> {formatDateTime(block.started_at)}</div> : null}
+                    {block.finished_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 4 }}><b>Conclusão:</b> {formatDateTime(block.finished_at)}</div> : null}
+                    {block.started_at && block.finished_at ? <div style={{ fontSize: 13, color: '#444', marginBottom: 8 }}><b>Duração:</b> {durationLabel(block.started_at, block.finished_at)}</div> : null}
                     {block.events.length > 0 ? (
                       <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-                          Atividades registradas no dia
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades registradas no dia</div>
                         <div style={{ display: 'grid', gap: 6 }}>
                           {block.events.map((event, index) => (
                             <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
-                              • {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}
-                              {event.user_name ? ` (${event.user_name})` : ''}
+                              • {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}{event.user_name ? ` (${event.user_name})` : ''}
                             </div>
                           ))}
                         </div>
                       </div>
                     ) : null}
-
                     {safeStr(block.notes).trim() ? (
                       <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-                          Observação da etapa
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div>
                         <div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div>
                       </div>
                     ) : null}
-
                     {block.photos.length > 0 ? (
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>
-                          Fotos registradas na data
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Fotos registradas na data</div>
                         <div style={{ display: 'grid', gap: 8 }}>
                           {block.photos.map((photo) => (
                             <div key={photo.id} style={{ fontSize: 13, color: '#444' }}>
-                              • {formatDate(photo.created_at)} {formatTime(photo.created_at)} — {getPhotoKindLabel(photo.kind)}
-                              {photo.user_name ? ` (${photo.user_name})` : ''}
-                              {safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}
+                              • {formatDate(photo.created_at)} {formatTime(photo.created_at)} — {getPhotoKindLabel(photo.kind)}{photo.user_name ? ` (${photo.user_name})` : ''}{safeStr(photo.caption).trim() ? ` - ${photo.caption}` : ''}
                             </div>
                           ))}
                         </div>
@@ -1538,100 +1391,52 @@ export default function ObraRelatoriosPage() {
             )}
           </div>
         </>
-      ) : null}
+      )}
 
-      {mode === REPORT_MODE.period ? (
+      {mode === REPORT_MODE.period && (
         <>
           <div style={{ ...cardStyle, marginBottom: 18 }}>
             <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtro do período</div>
-
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div>
-                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
-              </div>
-
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
-                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
-              </div>
+              <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data inicial</div><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} /></div>
+              <div><div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} /></div>
             </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Registros no período</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div>
-            </div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Registros no período</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_logs}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Fotos no período</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Total de unidades</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{units.length}</div></div>
           </div>
 
           <div style={cardStyle}>
-            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>
-              Resumo do período — {formatDate(`${startDate}T12:00:00`)} até {formatDate(`${endDate}T12:00:00`)}
-            </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Relatório cronológico das atividades registradas no período.
-            </div>
-
+            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Resumo do período — {formatDate(`${startDate}T12:00:00`)} até {formatDate(`${endDate}T12:00:00`)}</div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório cronológico das atividades registradas no período.</div>
             {periodBlocks.length === 0 ? (
               <div style={{ color: '#666' }}>Nenhuma movimentação encontrada no período selecionado.</div>
             ) : (
               <div style={{ display: 'grid', gap: 14 }}>
                 {periodBlocks.map((block) => (
-                  <div
-                    key={block.unit_stage_id}
-                    style={{
-                      border: '1px solid #eee',
-                      borderRadius: 14,
-                      padding: 14,
-                      background: '#fafafa',
-                    }}
-                  >
-                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
-                      Unidade {safeStr(block.unit?.identifier) || '-'}
-                    </div>
-
-                    <div style={{ fontSize: 14, marginBottom: 6 }}>
-                      <b>Etapa:</b> {block.stage_name}
-                    </div>
-
-                    <div style={{ fontSize: 14, marginBottom: 6 }}>
-                      <b>Status atual:</b> {statusLabel(block.status)}
-                    </div>
-
+                  <div key={block.unit_stage_id} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fafafa' }}>
+                    <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Unidade {safeStr(block.unit?.identifier) || '-'}</div>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Etapa:</b> {block.stage_name}</div>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}><b>Status atual:</b> {statusLabel(block.status)}</div>
                     {block.events.length > 0 ? (
                       <div style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-                          Atividades do período
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Atividades do período</div>
                         <div style={{ display: 'grid', gap: 6 }}>
                           {block.events.map((event, index) => (
                             <div key={`${block.unit_stage_id}_${index}`} style={{ fontSize: 13, color: '#444' }}>
-                              • {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}
-                              {event.user_name ? ` (${event.user_name})` : ''}
+                              • {formatDate(event.created_at)} {formatTime(event.created_at)} — {event.text}{event.user_name ? ` (${event.user_name})` : ''}
                             </div>
                           ))}
                         </div>
                       </div>
                     ) : null}
-
                     {safeStr(block.notes).trim() ? (
                       <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
-                          Observação da etapa
-                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Observação da etapa</div>
                         <div style={{ fontSize: 13, color: '#444' }}>{block.notes}</div>
                       </div>
                     ) : null}
@@ -1641,15 +1446,12 @@ export default function ObraRelatoriosPage() {
             )}
           </div>
         </>
-      ) : null}
+      )}
 
-      {mode === REPORT_MODE.observations ? (
+      {mode === REPORT_MODE.observations && (
         <>
           <div style={{ ...cardStyle, marginBottom: 18 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>
-              Filtros de observações e pendências
-            </div>
-
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
               <div>
                 <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
@@ -1660,26 +1462,15 @@ export default function ObraRelatoriosPage() {
                   <option value="done">Concluída</option>
                 </select>
               </div>
-
               <div>
                 <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
-                <input
-                  type="text"
-                  value={textFilter}
-                  onChange={(e) => setTextFilter(e.target.value)}
-                  placeholder="Buscar por unidade, etapa, observação..."
-                  style={inputStyle}
-                />
+                <input type="text" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} placeholder="Buscar por unidade, etapa, observação..." style={inputStyle} />
               </div>
             </div>
 
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-                <input
-                  type="checkbox"
-                  checked={onlyWithObservation}
-                  onChange={(e) => setOnlyWithObservation(e.target.checked)}
-                />
+                <input type="checkbox" checked={onlyWithObservation} onChange={(e) => setOnlyWithObservation(e.target.checked)} />
                 Mostrar somente etapas com observação
               </label>
             </div>
@@ -1687,25 +1478,10 @@ export default function ObraRelatoriosPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div>
                 <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Filtrar por unidades</div>
-                <div
-                  style={{
-                    border: '1px solid #eee',
-                    borderRadius: 12,
-                    padding: 10,
-                    background: '#fafafa',
-                    maxHeight: 220,
-                    overflowY: 'auto',
-                    display: 'grid',
-                    gap: 8,
-                  }}
-                >
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
                   {units.map((unit) => (
                     <label key={unit.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                      <input
-                        type="checkbox"
-                        checked={unitFilter.includes(unit.id)}
-                        onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)}
-                      />
+                      <input type="checkbox" checked={unitFilter.includes(unit.id)} onChange={() => toggleMultiValue(setUnitFilter, unitFilter, unit.id)} />
                       Unidade {unit.identifier || '-'}
                     </label>
                   ))}
@@ -1716,42 +1492,19 @@ export default function ObraRelatoriosPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <div style={{ fontSize: 12, color: '#666' }}>Filtrar por etapas</div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      onClick={() => setStageFilter(stages.map((s) => s.id))}
-                      style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}
-                    >
+                    <button type="button" onClick={() => setStageFilter(stages.map((s) => s.id))} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
                       Marcar todas
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setStageFilter([])}
-                      style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}
-                    >
+                    <button type="button" onClick={() => setStageFilter([])} style={{ ...softButtonStyle, padding: '6px 10px', fontSize: 12 }}>
                       Limpar
                     </button>
                   </div>
                 </div>
 
-                <div
-                  style={{
-                    border: '1px solid #eee',
-                    borderRadius: 12,
-                    padding: 10,
-                    background: '#fafafa',
-                    maxHeight: 220,
-                    overflowY: 'auto',
-                    display: 'grid',
-                    gap: 8,
-                  }}
-                >
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, background: '#fafafa', maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>
                   {stages.map((stage) => (
                     <label key={stage.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
-                      <input
-                        type="checkbox"
-                        checked={stageFilter.includes(stage.id)}
-                        onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)}
-                      />
+                      <input type="checkbox" checked={stageFilter.includes(stage.id)} onChange={() => toggleMultiValue(setStageFilter, stageFilter, stage.id)} />
                       {stage.name || '-'}
                     </label>
                   ))}
@@ -1761,33 +1514,16 @@ export default function ObraRelatoriosPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Pendentes</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Em andamento</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Concluídas</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Com observação</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div>
-            </div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.total}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Pendentes</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.pending}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Em andamento</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.in_progress}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Concluídas</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.done}</div></div>
+            <div style={cardStyle}><div style={{ fontSize: 12, color: '#666' }}>Com observação</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{observationSummary.with_notes}</div></div>
           </div>
 
           <div style={cardStyle}>
             <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 6 }}>Observações e pendências</div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>
-              Relatório filtrável por status, unidade, etapa e texto.
-            </div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 16 }}>Relatório filtrável por status, unidade, etapa e texto.</div>
 
             {filteredObservationRows.length === 0 ? (
               <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div>
@@ -1825,7 +1561,7 @@ export default function ObraRelatoriosPage() {
             )}
           </div>
         </>
-      ) : null}
+      )}
     </div>
   )
 }
