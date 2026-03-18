@@ -2,8 +2,29 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
+import { createIssue, listIssuesByUnit, updateIssue } from '../../lib/issues-service'
 
 const BUCKET = 'unit-stage-photos'
+
+const ISSUE_STATUS_PT = {
+  open: 'Aberta',
+  in_progress: 'Em andamento',
+  resolved: 'Resolvida',
+}
+
+const ISSUE_PRIORITY_PT = {
+  low: 'Baixa',
+  medium: 'Média',
+  high: 'Alta',
+}
+
+const EMPTY_ISSUE_FORM = {
+  title: '',
+  description: '',
+  priority: 'medium',
+  assigned_to: '',
+  status: 'open',
+}
 
 const STATUS_PT = {
   pending: 'Pendente',
@@ -43,6 +64,14 @@ function formatDateTime(value) {
 
 function formatStatusLabel(status) {
   return STATUS_PT[status] || status || '—'
+}
+
+function formatIssueStatusLabel(status) {
+  return ISSUE_STATUS_PT[status] || status || 'â€”'
+}
+
+function formatIssuePriorityLabel(priority) {
+  return ISSUE_PRIORITY_PT[priority] || priority || 'â€”'
 }
 
 function buildLogDescription(log) {
@@ -363,6 +392,13 @@ export default function UnidadePage() {
   const [stages, setStages] = useState([])
   const [stageCatalog, setStageCatalog] = useState([])
   const [stageLogsByStageId, setStageLogsByStageId] = useState({})
+  const [issues, setIssues] = useState([])
+  const [issueAssignees, setIssueAssignees] = useState([])
+  const [issueModalOpen, setIssueModalOpen] = useState(false)
+  const [issueModalBusy, setIssueModalBusy] = useState(false)
+  const [issueForm, setIssueForm] = useState(EMPTY_ISSUE_FORM)
+  const [editingIssueId, setEditingIssueId] = useState('')
+  const [issueSavingId, setIssueSavingId] = useState('')
 
   const [signedUrlByPhotoId, setSignedUrlByPhotoId] = useState({})
   const [busyStageId, setBusyStageId] = useState(null)
@@ -403,6 +439,36 @@ export default function UnidadePage() {
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [openActionMenuStageId])
+
+  const issueAssigneeNameById = useMemo(
+    () =>
+      Object.fromEntries(
+        (issueAssignees || []).map((profile) => [profile.id, safeStr(profile.full_name).trim() || 'Usuário'])
+      ),
+    [issueAssignees]
+  )
+
+  function resetIssueForm() {
+    setIssueForm(EMPTY_ISSUE_FORM)
+    setEditingIssueId('')
+  }
+
+  function openCreateIssueModal() {
+    resetIssueForm()
+    setIssueModalOpen(true)
+  }
+
+  function openEditIssueModal(issue) {
+    setEditingIssueId(issue.id)
+    setIssueForm({
+      title: safeStr(issue?.title),
+      description: safeStr(issue?.description),
+      priority: safeStr(issue?.priority) || 'medium',
+      assigned_to: safeStr(issue?.assigned_to),
+      status: safeStr(issue?.status) || 'open',
+    })
+    setIssueModalOpen(true)
+  }
 
   async function ensureAuth() {
     const { data, error } = await supabase.auth.getUser()
@@ -527,6 +593,7 @@ export default function UnidadePage() {
       alert(`Erro ao carregar unidade: ${unitErr.message}`)
       setUnit(null)
       setStages([])
+      setIssues([])
       setStageLogsByStageId({})
       setLoading(false)
       return
@@ -535,6 +602,7 @@ export default function UnidadePage() {
     if (!unitData) {
       setUnit(null)
       setStages([])
+      setIssues([])
       setStageLogsByStageId({})
       setLoading(false)
       return
@@ -542,12 +610,40 @@ export default function UnidadePage() {
 
     setUnit(unitData)
 
-    const { data: catalog, error: cErr } = await supabase
-      .from('stages')
-      .select('id, name, order_index, is_active, project_id')
-      .eq('project_id', unitData.project_id)
-      .order('order_index', { ascending: true })
-      .order('name', { ascending: true })
+    const [
+      { data: catalog, error: cErr },
+      { data: stageRows, error: stageErr },
+      { data: issuesRows, error: issuesErr },
+      { data: assigneeRows, error: assigneesErr },
+    ] = await Promise.all([
+      supabase
+        .from('stages')
+        .select('id, name, order_index, is_active, project_id')
+        .eq('project_id', unitData.project_id)
+        .order('order_index', { ascending: true })
+        .order('name', { ascending: true }),
+      supabase
+        .from('unit_stages')
+        .select(
+          `
+          id,
+          unit_id,
+          stage_id,
+          status,
+          started_at,
+          finished_at,
+          notes,
+          custom_name,
+          order_index,
+          is_active,
+          stages ( id, name ),
+          unit_stage_photos ( id, path, caption, kind, created_at, user_id )
+        `
+        )
+        .eq('unit_id', unitId),
+      listIssuesByUnit(unitId),
+      supabase.from('profiles').select('id, full_name').order('full_name', { ascending: true }),
+    ])
 
     if (!cErr) {
       setStageCatalog(Array.isArray(catalog) ? catalog.filter((s) => s.is_active !== false) : [])
@@ -556,33 +652,28 @@ export default function UnidadePage() {
       setStageCatalog([])
     }
 
-    const { data: stageRows, error: stageErr } = await supabase
-      .from('unit_stages')
-      .select(
-        `
-        id,
-        unit_id,
-        stage_id,
-        status,
-        started_at,
-        finished_at,
-        notes,
-        custom_name,
-        order_index,
-        is_active,
-        stages ( id, name ),
-        unit_stage_photos ( id, path, caption, kind, created_at, user_id )
-      `
-      )
-      .eq('unit_id', unitId)
-
     if (stageErr) {
       console.error('Erro ao carregar etapas:', stageErr)
       alert(`Erro ao carregar etapas: ${stageErr.message}`)
       setStages([])
+      setIssues([])
       setStageLogsByStageId({})
       setLoading(false)
       return
+    }
+
+    if (issuesErr) {
+      console.error('Erro ao carregar issues da unidade:', issuesErr)
+      setIssues([])
+    } else {
+      setIssues(Array.isArray(issuesRows) ? issuesRows : [])
+    }
+
+    if (assigneesErr) {
+      console.error('Erro ao carregar responsáveis das issues:', assigneesErr)
+      setIssueAssignees([])
+    } else {
+      setIssueAssignees(Array.isArray(assigneeRows) ? assigneeRows : [])
     }
 
     const normalized = normalizeStages(stageRows || [])
@@ -656,6 +747,67 @@ export default function UnidadePage() {
     setCopyNotes(false)
     setCopyPhotos(false)
     setCopyOpen(true)
+  }
+
+  async function saveIssue() {
+    const trimmedTitle = safeStr(issueForm.title).trim()
+    if (!trimmedTitle) {
+      alert('Informe o título da issue.')
+      return
+    }
+
+    try {
+      setIssueModalBusy(true)
+
+      const payload = {
+        title: trimmedTitle,
+        description: safeStr(issueForm.description),
+        priority: safeStr(issueForm.priority) || 'medium',
+        assigned_to: safeStr(issueForm.assigned_to),
+        status: safeStr(issueForm.status) || 'open',
+      }
+
+      const result = editingIssueId
+        ? await updateIssue(editingIssueId, payload)
+        : await createIssue({ unit_id: unitId, ...payload })
+
+      if (result.error) {
+        alert(`Erro ao salvar issue: ${result.error.message}`)
+        return
+      }
+
+      setIssueModalOpen(false)
+      resetIssueForm()
+      await loadAll()
+    } finally {
+      setIssueModalBusy(false)
+    }
+  }
+
+  async function changeIssueStatus(issueId, nextStatus) {
+    try {
+      setIssueSavingId(issueId)
+
+      const { error } = await updateIssue(issueId, { status: nextStatus })
+      if (error) {
+        alert(`Erro ao atualizar issue: ${error.message}`)
+        return
+      }
+
+      setIssues((prev) =>
+        prev.map((issue) =>
+          issue.id === issueId
+            ? {
+                ...issue,
+                status: nextStatus,
+                updated_at: new Date().toISOString(),
+              }
+            : issue
+        )
+      )
+    } finally {
+      setIssueSavingId('')
+    }
   }
 
   async function updateStageStatus(unitStageId, newStatus) {
@@ -1218,6 +1370,7 @@ export default function UnidadePage() {
   }
 
   const visibleStages = showArchived ? stages : stages.filter((s) => s.is_active !== false)
+  const visibleIssues = [...issues].sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -1253,6 +1406,153 @@ export default function UnidadePage() {
       </div>
 
       <hr style={{ margin: '18px 0' }} />
+
+      <div style={{ display: 'grid', gap: 14, maxWidth: 1180, marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Issues da unidade</h2>
+            <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+              {visibleIssues.length === 1 ? '1 issue cadastrada' : `${visibleIssues.length} issues cadastradas`}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={openCreateIssueModal}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: '#111',
+              color: '#fff',
+              cursor: 'pointer',
+              fontWeight: 900,
+            }}
+          >
+            Nova issue
+          </button>
+        </div>
+
+        {visibleIssues.length === 0 ? (
+          <div
+            style={{
+              border: '1px solid #eee',
+              borderRadius: 14,
+              padding: 16,
+              background: '#fafafa',
+              color: '#666',
+            }}
+          >
+            Nenhuma issue cadastrada para esta unidade ainda.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {visibleIssues.map((issue) => {
+              const savingStatus = issueSavingId === issue.id
+              const assigneeName = issue.assigned_to ? issueAssigneeNameById[issue.assigned_to] || 'Usuário' : 'Não atribuído'
+
+              return (
+                <div
+                  key={issue.id}
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 14,
+                    padding: 16,
+                    background: '#fff',
+                    boxShadow: '0 6px 20px rgba(0,0,0,0.04)',
+                    display: 'grid',
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <div style={{ fontSize: 18, fontWeight: 800 }}>{issue.title || 'Sem título'}</div>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: '5px 9px',
+                            borderRadius: 999,
+                            border: '1px solid #ddd',
+                            background: '#fff',
+                            fontWeight: 800,
+                          }}
+                        >
+                          {formatIssueStatusLabel(issue.status)}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: '5px 9px',
+                            borderRadius: 999,
+                            border: '1px solid #ddd',
+                            background: '#f7f7f7',
+                            fontWeight: 800,
+                          }}
+                        >
+                          Prioridade {formatIssuePriorityLabel(issue.priority)}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: 13, color: '#555', lineHeight: 1.5 }}>
+                        {safeStr(issue.description).trim() || 'Sem descrição.'}
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
+                        <span>Responsável: <b>{assigneeName}</b></span>
+                        <span>Criada em: <b>{formatDateTime(issue.created_at) || '—'}</b></span>
+                        <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => openEditIssueModal(issue)}
+                      disabled={savingStatus}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: 10,
+                        border: '1px solid #ddd',
+                        background: '#fff',
+                        cursor: savingStatus ? 'not-allowed' : 'pointer',
+                        fontWeight: 700,
+                      }}
+                    >
+                      Editar
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {['open', 'in_progress', 'resolved'].map((status) => {
+                      const active = issue.status === status
+                      return (
+                        <button
+                          key={status}
+                          type="button"
+                          disabled={savingStatus || active}
+                          onClick={() => changeIssueStatus(issue.id, status)}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: 10,
+                            border: '1px solid #ddd',
+                            background: active ? '#111' : '#fff',
+                            color: active ? '#fff' : '#111',
+                            cursor: savingStatus || active ? 'not-allowed' : 'pointer',
+                            fontWeight: 700,
+                            opacity: savingStatus && !active ? 0.7 : 1,
+                          }}
+                        >
+                          {formatIssueStatusLabel(status)}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       <h2 style={{ marginTop: 0 }}>Etapas</h2>
 
@@ -1733,6 +2033,160 @@ export default function UnidadePage() {
           )
         })}
       </div>
+
+      <Modal
+        open={issueModalOpen}
+        title={editingIssueId ? 'Editar issue' : 'Nova issue'}
+        onClose={() => {
+          if (issueModalBusy) return
+          setIssueModalOpen(false)
+          resetIssueForm()
+        }}
+        busy={issueModalBusy}
+      >
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Título</div>
+            <input
+              value={issueForm.title}
+              onChange={(e) => setIssueForm((prev) => ({ ...prev, title: e.target.value }))}
+              disabled={issueModalBusy}
+              placeholder="Resumo da issue"
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Descrição</div>
+            <textarea
+              value={issueForm.description}
+              onChange={(e) => setIssueForm((prev) => ({ ...prev, description: e.target.value }))}
+              disabled={issueModalBusy}
+              placeholder="Detalhes da issue"
+              style={{
+                width: '100%',
+                minHeight: 140,
+                padding: 12,
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                outline: 'none',
+                resize: 'vertical',
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gap: 12,
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            }}
+          >
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Prioridade</div>
+              <select
+                value={issueForm.priority}
+                onChange={(e) => setIssueForm((prev) => ({ ...prev, priority: e.target.value }))}
+                disabled={issueModalBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                }}
+              >
+                <option value="low">Baixa</option>
+                <option value="medium">Média</option>
+                <option value="high">Alta</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Status</div>
+              <select
+                value={issueForm.status}
+                onChange={(e) => setIssueForm((prev) => ({ ...prev, status: e.target.value }))}
+                disabled={issueModalBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                }}
+              >
+                <option value="open">Aberta</option>
+                <option value="in_progress">Em andamento</option>
+                <option value="resolved">Resolvida</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Responsável</div>
+              <select
+                value={issueForm.assigned_to}
+                onChange={(e) => setIssueForm((prev) => ({ ...prev, assigned_to: e.target.value }))}
+                disabled={issueModalBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                }}
+              >
+                <option value="">Não atribuído</option>
+                {issueAssignees.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {safeStr(profile.full_name).trim() || 'Usuário'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => {
+                setIssueModalOpen(false)
+                resetIssueForm()
+              }}
+              disabled={issueModalBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: issueModalBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Cancelar
+            </button>
+
+            <button
+              type="button"
+              onClick={saveIssue}
+              disabled={issueModalBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: issueModalBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar issue'}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={renameOpen} title="Editar etapa" onClose={() => setRenameOpen(false)} busy={renameBusy}>
         <div style={{ display: 'grid', gap: 14 }}>
