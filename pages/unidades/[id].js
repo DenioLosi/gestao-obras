@@ -19,6 +19,7 @@ const ISSUE_PRIORITY_PT = {
 }
 
 const EMPTY_ISSUE_FORM = {
+  unit_stage_id: '',
   title: '',
   description: '',
   priority: 'medium',
@@ -395,6 +396,7 @@ export default function UnidadePage() {
   const [issues, setIssues] = useState([])
   const [issueAssignees, setIssueAssignees] = useState([])
   const [issueModalOpen, setIssueModalOpen] = useState(false)
+  const [issueModalStageId, setIssueModalStageId] = useState('')
   const [issueModalBusy, setIssueModalBusy] = useState(false)
   const [issueForm, setIssueForm] = useState(EMPTY_ISSUE_FORM)
   const [editingIssueId, setEditingIssueId] = useState('')
@@ -448,19 +450,59 @@ export default function UnidadePage() {
     [issueAssignees]
   )
 
+  const issuesByStageId = useMemo(() => {
+    const grouped = {}
+    for (const issue of issues || []) {
+      const key = safeStr(issue?.unit_stage_id)
+      if (!key) continue
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push(issue)
+    }
+
+    for (const key of Object.keys(grouped)) {
+      grouped[key].sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
+    }
+
+    return grouped
+  }, [issues])
+
+  const openIssueCountByStageId = useMemo(() => {
+    const counts = {}
+    for (const issue of issues || []) {
+      const key = safeStr(issue?.unit_stage_id)
+      if (!key) continue
+      if (safeStr(issue?.status) !== 'open') continue
+      counts[key] = (counts[key] || 0) + 1
+    }
+    return counts
+  }, [issues])
+
+  const selectedIssueStage = useMemo(
+    () => stages.find((stage) => stage.id === issueModalStageId) || null,
+    [stages, issueModalStageId]
+  )
+
+  const selectedStageIssues = useMemo(
+    () => issuesByStageId[issueModalStageId] || [],
+    [issuesByStageId, issueModalStageId]
+  )
+
   function resetIssueForm() {
     setIssueForm(EMPTY_ISSUE_FORM)
     setEditingIssueId('')
   }
 
-  function openCreateIssueModal() {
-    resetIssueForm()
+  function openStageIssuesModal(stageRow) {
+    setIssueModalStageId(stageRow.id)
     setIssueModalOpen(true)
+    resetIssueForm()
   }
 
   function openEditIssueModal(issue) {
+    setIssueModalStageId(safeStr(issue?.unit_stage_id))
     setEditingIssueId(issue.id)
     setIssueForm({
+      unit_stage_id: safeStr(issue?.unit_stage_id),
       title: safeStr(issue?.title),
       description: safeStr(issue?.description),
       priority: safeStr(issue?.priority) || 'medium',
@@ -468,6 +510,14 @@ export default function UnidadePage() {
       status: safeStr(issue?.status) || 'open',
     })
     setIssueModalOpen(true)
+  }
+
+  function startCreateIssueForStage(stageId) {
+    setEditingIssueId('')
+    setIssueForm({
+      ...EMPTY_ISSUE_FORM,
+      unit_stage_id: stageId,
+    })
   }
 
   async function ensureAuth() {
@@ -750,7 +800,12 @@ export default function UnidadePage() {
   }
 
   async function saveIssue() {
+    const currentStageId = safeStr(issueForm.unit_stage_id || issueModalStageId)
     const trimmedTitle = safeStr(issueForm.title).trim()
+    if (!currentStageId) {
+      alert('Selecione uma etapa para a pendência.')
+      return
+    }
     if (!trimmedTitle) {
       alert('Informe o título da issue.')
       return
@@ -760,6 +815,7 @@ export default function UnidadePage() {
       setIssueModalBusy(true)
 
       const payload = {
+        unit_stage_id: currentStageId,
         title: trimmedTitle,
         description: safeStr(issueForm.description),
         priority: safeStr(issueForm.priority) || 'medium',
@@ -777,6 +833,7 @@ export default function UnidadePage() {
       }
 
       setIssueModalOpen(false)
+      setIssueModalStageId('')
       resetIssueForm()
       await loadAll()
     } finally {
@@ -1370,7 +1427,7 @@ export default function UnidadePage() {
   }
 
   const visibleStages = showArchived ? stages : stages.filter((s) => s.is_active !== false)
-  const visibleIssues = [...issues].sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
+  const visibleIssues = []
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -1407,7 +1464,8 @@ export default function UnidadePage() {
 
       <hr style={{ margin: '18px 0' }} />
 
-      <div style={{ display: 'grid', gap: 14, maxWidth: 1180, marginBottom: 24 }}>
+      {false ? (
+        <div style={{ display: 'grid', gap: 14, maxWidth: 1180, marginBottom: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
             <h2 style={{ margin: 0 }}>Issues da unidade</h2>
@@ -1418,7 +1476,7 @@ export default function UnidadePage() {
 
           <button
             type="button"
-            onClick={openCreateIssueModal}
+            onClick={() => {}}
             style={{
               padding: '10px 12px',
               borderRadius: 12,
@@ -1552,7 +1610,8 @@ export default function UnidadePage() {
             })}
           </div>
         )}
-      </div>
+        </div>
+      ) : null}
 
       <h2 style={{ marginTop: 0 }}>Etapas</h2>
 
@@ -1568,6 +1627,7 @@ export default function UnidadePage() {
           const isUploading = uploadingStageId === s.id
           const stageLogs = stageLogsByStageId[s.id] || []
           const sortedPhotos = [...(s.photos || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+          const stageOpenIssueCount = openIssueCountByStageId[s.id] || 0
 
           return (
             <div
@@ -1625,6 +1685,23 @@ export default function UnidadePage() {
                     }}
                   >
                     Alterar
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isBusy || isUploading}
+                    onClick={() => openStageIssuesModal(s)}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: 10,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Pendências{stageOpenIssueCount > 0 ? ` (${stageOpenIssueCount})` : ''}
                   </button>
 
                   <div
@@ -2036,15 +2113,139 @@ export default function UnidadePage() {
 
       <Modal
         open={issueModalOpen}
-        title={editingIssueId ? 'Editar issue' : 'Nova issue'}
+        title={`Pendências da etapa ${selectedIssueStage?.stage_name || ''}`}
         onClose={() => {
           if (issueModalBusy) return
           setIssueModalOpen(false)
+          setIssueModalStageId('')
           resetIssueForm()
         }}
         busy={issueModalBusy}
       >
         <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, color: '#666' }}>
+              {selectedStageIssues.length === 1 ? '1 pendência nesta etapa' : `${selectedStageIssues.length} pendências nesta etapa`}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => startCreateIssueForStage(issueModalStageId)}
+              disabled={issueModalBusy || !issueModalStageId}
+              style={{
+                padding: '8px 10px',
+                borderRadius: 10,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: issueModalBusy || !issueModalStageId ? 'not-allowed' : 'pointer',
+                fontWeight: 700,
+              }}
+            >
+              Nova pendência
+            </button>
+          </div>
+
+          {selectedStageIssues.length === 0 ? (
+            <div
+              style={{
+                border: '1px solid #eee',
+                borderRadius: 12,
+                padding: 14,
+                background: '#fafafa',
+                color: '#666',
+              }}
+            >
+              Nenhuma pendência cadastrada para esta etapa.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {selectedStageIssues.map((issue) => {
+                const savingStatus = issueSavingId === issue.id
+                const assigneeName = issue.assigned_to ? issueAssigneeNameById[issue.assigned_to] || 'Usuário' : 'Não atribuído'
+
+                return (
+                  <div
+                    key={issue.id}
+                    style={{
+                      border: '1px solid #eee',
+                      borderRadius: 12,
+                      padding: 12,
+                      background: '#fff',
+                      display: 'grid',
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <div style={{ fontSize: 15, fontWeight: 800 }}>{issue.title || 'Sem título'}</div>
+                          <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, border: '1px solid #ddd', fontWeight: 800 }}>
+                            {formatIssueStatusLabel(issue.status)}
+                          </span>
+                          <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, border: '1px solid #ddd', background: '#f7f7f7', fontWeight: 800 }}>
+                            {formatIssuePriorityLabel(issue.priority)}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 13, color: '#555', lineHeight: 1.5 }}>
+                          {safeStr(issue.description).trim() || 'Sem descrição.'}
+                        </div>
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
+                          <span>Responsável: <b>{assigneeName}</b></span>
+                          <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => openEditIssueModal(issue)}
+                        disabled={savingStatus || issueModalBusy}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: 10,
+                          border: '1px solid #ddd',
+                          background: '#fff',
+                          cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
+                          fontWeight: 700,
+                        }}
+                      >
+                        Editar
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {['open', 'in_progress', 'resolved'].map((status) => {
+                        const active = issue.status === status
+                        return (
+                          <button
+                            key={status}
+                            type="button"
+                            disabled={savingStatus || issueModalBusy || active}
+                            onClick={() => changeIssueStatus(issue.id, status)}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: 10,
+                              border: '1px solid #ddd',
+                              background: active ? '#111' : '#fff',
+                              color: active ? '#fff' : '#111',
+                              cursor: savingStatus || issueModalBusy || active ? 'not-allowed' : 'pointer',
+                              fontWeight: 700,
+                            }}
+                          >
+                            {formatIssueStatusLabel(status)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          <div style={{ fontSize: 13, fontWeight: 900, color: '#444' }}>
+            {editingIssueId ? 'Editar pendência' : 'Nova pendência'}
+          </div>
+
           <div style={{ display: 'grid', gap: 6 }}>
             <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Título</div>
             <input
@@ -2153,6 +2354,7 @@ export default function UnidadePage() {
               type="button"
               onClick={() => {
                 setIssueModalOpen(false)
+                setIssueModalStageId('')
                 resetIssueForm()
               }}
               disabled={issueModalBusy}
