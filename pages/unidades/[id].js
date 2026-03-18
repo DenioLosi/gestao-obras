@@ -658,7 +658,29 @@ export default function UnidadePage() {
       return
     }
 
-    setUnit(unitData)
+    const { data: projectData, error: projectErr } = await supabase
+      .from('projects')
+      .select('id, tenant_id')
+      .eq('id', unitData.project_id)
+      .maybeSingle()
+
+    if (projectErr) {
+      console.error('Erro ao carregar projeto da unidade:', projectErr)
+      alert(`Erro ao carregar unidade: ${projectErr.message}`)
+      setUnit(null)
+      setStages([])
+      setIssues([])
+      setStageLogsByStageId({})
+      setLoading(false)
+      return
+    }
+
+    const resolvedUnit = {
+      ...unitData,
+      tenant_id: projectData?.tenant_id || null,
+    }
+
+    setUnit(resolvedUnit)
 
     const [
       { data: catalog, error: cErr },
@@ -669,7 +691,7 @@ export default function UnidadePage() {
       supabase
         .from('stages')
         .select('id, name, order_index, is_active, project_id')
-        .eq('project_id', unitData.project_id)
+        .eq('project_id', resolvedUnit.project_id)
         .order('order_index', { ascending: true })
         .order('name', { ascending: true }),
       supabase
@@ -810,6 +832,10 @@ export default function UnidadePage() {
       alert('Informe o título da issue.')
       return
     }
+    if (!editingIssueId && (!unit?.project_id || !unit?.tenant_id)) {
+      alert('Não foi possível identificar a obra da unidade para criar a pendência.')
+      return
+    }
 
     try {
       setIssueModalBusy(true)
@@ -825,7 +851,12 @@ export default function UnidadePage() {
 
       const result = editingIssueId
         ? await updateIssue(editingIssueId, payload)
-        : await createIssue({ unit_id: unitId, ...payload })
+        : await createIssue({
+            tenant_id: unit?.tenant_id,
+            project_id: unit?.project_id,
+            unit_id: unitId,
+            ...payload,
+          })
 
       if (result.error) {
         alert(`Erro ao salvar issue: ${result.error.message}`)
