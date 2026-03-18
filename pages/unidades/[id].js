@@ -6,6 +6,24 @@ import { createIssue, listIssuesByUnit, updateIssue } from '../../lib/issues-ser
 
 const BUCKET = 'unit-stage-photos'
 
+const STAGE_STATUS_STYLES = {
+  pending: {
+    background: '#FFF4D6',
+    borderColor: '#E7C76A',
+    color: '#7A5A00',
+  },
+  in_progress: {
+    background: '#DFF1FF',
+    borderColor: '#7AB8E6',
+    color: '#0F4C81',
+  },
+  done: {
+    background: '#DDF7E5',
+    borderColor: '#7BC693',
+    color: '#17633B',
+  },
+}
+
 const ISSUE_STATUS_PT = {
   open: 'Aberta',
   in_progress: 'Em andamento',
@@ -61,6 +79,16 @@ function formatDateTime(value) {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleString('pt-BR')
+}
+
+function getStageStatusStyle(status) {
+  return (
+    STAGE_STATUS_STYLES[status] || {
+      background: '#F3F4F6',
+      borderColor: '#D1D5DB',
+      color: '#374151',
+    }
+  )
 }
 
 function formatStatusLabel(status) {
@@ -407,7 +435,6 @@ export default function UnidadePage() {
   const [uploadingStageId, setUploadingStageId] = useState(null)
   const [deletingPhotoId, setDeletingPhotoId] = useState(null)
 
-  const [editingStatusStageId, setEditingStatusStageId] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
 
   const [manageOpen, setManageOpen] = useState(false)
@@ -634,7 +661,7 @@ export default function UnidadePage() {
 
     const { data: unitData, error: unitErr } = await supabase
       .from('units')
-      .select('id, identifier, project_id')
+      .select('id, identifier, project_id, tenant_id')
       .eq('id', unitId)
       .maybeSingle()
 
@@ -801,13 +828,22 @@ export default function UnidadePage() {
 
   async function saveIssue() {
     const currentStageId = safeStr(issueForm.unit_stage_id || issueModalStageId)
+    const currentStage = stages.find((stage) => stage.id === currentStageId)
     const trimmedTitle = safeStr(issueForm.title).trim()
     if (!currentStageId) {
       alert('Selecione uma etapa para a pendência.')
       return
     }
+    if (!currentStage || safeStr(currentStage.unit_id) !== safeStr(unit?.id || unitId)) {
+      alert('Selecione uma etapa válida para a pendência.')
+      return
+    }
+    if (!safeStr(unit?.tenant_id) || !safeStr(unit?.project_id)) {
+      alert('Não foi possível identificar tenant e obra da unidade.')
+      return
+    }
     if (!trimmedTitle) {
-      alert('Informe o título da issue.')
+      alert('Informe o título da pendência.')
       return
     }
 
@@ -815,7 +851,10 @@ export default function UnidadePage() {
       setIssueModalBusy(true)
 
       const payload = {
-        unit_stage_id: currentStageId,
+        tenant_id: safeStr(unit?.tenant_id),
+        project_id: safeStr(unit?.project_id),
+        unit_id: safeStr(unit?.id || unitId),
+        unit_stage_id: currentStage.id,
         title: trimmedTitle,
         description: safeStr(issueForm.description),
         priority: safeStr(issueForm.priority) || 'medium',
@@ -825,10 +864,10 @@ export default function UnidadePage() {
 
       const result = editingIssueId
         ? await updateIssue(editingIssueId, payload)
-        : await createIssue({ unit_id: unitId, ...payload })
+        : await createIssue(payload)
 
       if (result.error) {
-        alert(`Erro ao salvar issue: ${result.error.message}`)
+        alert(`Erro ao salvar pendência: ${result.error.message}`)
         return
       }
 
@@ -847,7 +886,7 @@ export default function UnidadePage() {
 
       const { error } = await updateIssue(issueId, { status: nextStatus })
       if (error) {
-        alert(`Erro ao atualizar issue: ${error.message}`)
+        alert(`Erro ao atualizar pendência: ${error.message}`)
         return
       }
 
@@ -1468,9 +1507,9 @@ export default function UnidadePage() {
         <div style={{ display: 'grid', gap: 14, maxWidth: 1180, marginBottom: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
-            <h2 style={{ margin: 0 }}>Issues da unidade</h2>
+            <h2 style={{ margin: 0 }}>Pendências da unidade</h2>
             <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
-              {visibleIssues.length === 1 ? '1 issue cadastrada' : `${visibleIssues.length} issues cadastradas`}
+              {visibleIssues.length === 1 ? '1 pendência cadastrada' : `${visibleIssues.length} pendências cadastradas`}
             </div>
           </div>
 
@@ -1487,7 +1526,7 @@ export default function UnidadePage() {
               fontWeight: 900,
             }}
           >
-            Nova issue
+            Nova pendência
           </button>
         </div>
 
@@ -1501,7 +1540,7 @@ export default function UnidadePage() {
               color: '#666',
             }}
           >
-            Nenhuma issue cadastrada para esta unidade ainda.
+            Nenhuma pendência cadastrada para esta unidade ainda.
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 12 }}>
@@ -1628,6 +1667,7 @@ export default function UnidadePage() {
           const stageLogs = stageLogsByStageId[s.id] || []
           const sortedPhotos = [...(s.photos || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
           const stageOpenIssueCount = openIssueCountByStageId[s.id] || 0
+          const stageStatusStyle = getStageStatusStyle(s.status)
 
           return (
             <div
@@ -1655,37 +1695,59 @@ export default function UnidadePage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                  <span
+                  <div
                     style={{
-                      fontSize: 12,
-                      padding: '6px 10px',
-                      borderRadius: 999,
-                      border: '1px solid #ddd',
-                      background: '#fff',
-                      fontWeight: 800,
-                      whiteSpace: 'nowrap',
+                      position: 'relative',
+                      minWidth: 170,
                     }}
-                    title="Status atual"
+                    title="Status da etapa"
                   >
-                    {STATUS_PT[s.status] || '—'}
-                  </span>
+                    <select
+                      value={s.status || 'pending'}
+                      disabled={isBusy || isUploading}
+                      onChange={async (e) => {
+                        const nextStatus = e.target.value
+                        if (nextStatus === s.status) return
+                        await updateStageStatus(s.id, nextStatus)
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 38px 10px 14px',
+                        borderRadius: 999,
+                        border: `1px solid ${stageStatusStyle.borderColor}`,
+                        background: stageStatusStyle.background,
+                        color: stageStatusStyle.color,
+                        fontWeight: 800,
+                        fontSize: 13,
+                        cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
+                        whiteSpace: 'nowrap',
+                        appearance: 'none',
+                        WebkitAppearance: 'none',
+                        MozAppearance: 'none',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.35)',
+                      }}
+                    >
+                      <option value="pending">Pendente</option>
+                      <option value="in_progress">Em andamento</option>
+                      <option value="done">Concluído</option>
+                    </select>
 
-                  <button
-                    type="button"
-                    disabled={isBusy || isUploading}
-                    onClick={() => setEditingStatusStageId((prev) => (prev === s.id ? null : s.id))}
-                    style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
-                      cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    Alterar
-                  </button>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        right: 14,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        color: stageStatusStyle.color,
+                        fontSize: 12,
+                        pointerEvents: 'none',
+                        fontWeight: 900,
+                      }}
+                    >
+                      ▼
+                    </span>
+                  </div>
 
                   <button
                     type="button"
@@ -1821,67 +1883,6 @@ export default function UnidadePage() {
                   </div>
                 </div>
               </div>
-
-              {editingStatusStageId === s.id ? (
-                <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <button
-                    type="button"
-                    disabled={isBusy || isUploading}
-                    onClick={async () => {
-                      await updateStageStatus(s.id, 'pending')
-                      setEditingStatusStageId(null)
-                    }}
-                    style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
-                      cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
-                    }}
-                  >
-                    Pendente
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={isBusy || isUploading}
-                    onClick={async () => {
-                      await updateStageStatus(s.id, 'in_progress')
-                      setEditingStatusStageId(null)
-                    }}
-                    style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
-                      cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
-                    }}
-                  >
-                    Em andamento
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={isBusy || isUploading}
-                    onClick={async () => {
-                      await updateStageStatus(s.id, 'done')
-                      setEditingStatusStageId(null)
-                    }}
-                    style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
-                      cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
-                    }}
-                  >
-                    Concluído
-                  </button>
-                </div>
-              ) : null}
 
               <div
                 style={{
@@ -2252,7 +2253,7 @@ export default function UnidadePage() {
               value={issueForm.title}
               onChange={(e) => setIssueForm((prev) => ({ ...prev, title: e.target.value }))}
               disabled={issueModalBusy}
-              placeholder="Resumo da issue"
+              placeholder="Resumo da pendência"
               style={{
                 padding: '10px 12px',
                 borderRadius: 12,
@@ -2268,7 +2269,7 @@ export default function UnidadePage() {
               value={issueForm.description}
               onChange={(e) => setIssueForm((prev) => ({ ...prev, description: e.target.value }))}
               disabled={issueModalBusy}
-              placeholder="Detalhes da issue"
+              placeholder="Detalhes da pendência"
               style={{
                 width: '100%',
                 minHeight: 140,
@@ -2384,7 +2385,7 @@ export default function UnidadePage() {
                 fontWeight: 900,
               }}
             >
-              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar issue'}
+              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar pendência'}
             </button>
           </div>
         </div>
