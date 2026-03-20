@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
-import { createIssue, deleteIssue, listIssuesByUnit, updateIssue } from '../../lib/issues-service'
+import { createIssue, deleteIssue, listIssuesByUnit, sortIssuesByUrgency, updateIssue } from '../../lib/issues-service'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -25,6 +25,7 @@ const EMPTY_ISSUE_FORM = {
   priority: 'medium',
   assigned_to: '',
   status: 'open',
+  due_date: '',
 }
 
 const STATUS_PT = {
@@ -79,6 +80,33 @@ function formatDateTime(value) {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleString('pt-BR')
+}
+
+function formatDateOnly(value) {
+  if (!value) return ''
+  const dateValue = safeStr(value).trim().length <= 10 ? `${safeStr(value).trim()}T12:00:00` : value
+  const d = new Date(dateValue)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('pt-BR')
+}
+
+function toDateInputValue(value) {
+  const raw = safeStr(value).trim()
+  if (!raw) return ''
+  if (raw.length >= 10) return raw.slice(0, 10)
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return ''
+  const year = d.getFullYear()
+  const month = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function isIssueOverdue(issue) {
+  const dueDate = toDateInputValue(issue?.due_date)
+  if (!dueDate || safeStr(issue?.status) === 'resolved') return false
+  const today = toDateInputValue(new Date())
+  return dueDate < today
 }
 
 function formatStatusLabel(status) {
@@ -580,7 +608,7 @@ export default function UnidadePage() {
     for (const issue of issues || []) {
       const key = safeStr(issue?.unit_stage_id)
       if (!key) continue
-      if (safeStr(issue?.status) !== 'open') continue
+      if (safeStr(issue?.status) === 'resolved') continue
       counts[key] = (counts[key] || 0) + 1
     }
     return counts
@@ -617,6 +645,7 @@ export default function UnidadePage() {
       priority: safeStr(issue?.priority) || 'medium',
       assigned_to: safeStr(issue?.assigned_to),
       status: safeStr(issue?.status) || 'open',
+      due_date: toDateInputValue(issue?.due_date),
     })
     setIssueModalOpen(true)
   }
@@ -825,6 +854,7 @@ export default function UnidadePage() {
           stage_id,
           status,
           started_at,
+          due_date,
           finished_at,
           notes,
           custom_name,
@@ -860,7 +890,7 @@ export default function UnidadePage() {
       console.error('Erro ao carregar issues da unidade:', issuesErr)
       setIssues([])
     } else {
-      setIssues(Array.isArray(issuesRows) ? issuesRows : [])
+      setIssues(sortIssuesByUrgency(Array.isArray(issuesRows) ? issuesRows : []))
     }
 
     if (assigneesErr) {
@@ -976,6 +1006,7 @@ export default function UnidadePage() {
         priority: safeStr(issueForm.priority) || 'medium',
         assigned_to: safeStr(issueForm.assigned_to),
         status: safeStr(issueForm.status) || 'open',
+        due_date: safeStr(issueForm.due_date),
       }
 
       const result = editingIssueId
@@ -985,6 +1016,7 @@ export default function UnidadePage() {
             project_id: unit?.project_id,
             unit_id: unitId,
             created_by: currentUser.id,
+            started_at: new Date().toISOString(),
             ...payload,
           })
 
@@ -1030,7 +1062,12 @@ export default function UnidadePage() {
       const currentIssue = issues.find((issue) => issue.id === issueId)
       if (!currentIssue || !currentUser?.id) return
 
-      const { data, error } = await updateIssue(issueId, { status: nextStatus })
+      const issuePatch = { status: nextStatus }
+      if (!currentIssue?.started_at && nextStatus === 'in_progress') {
+        issuePatch.started_at = new Date().toISOString()
+      }
+
+      const { data, error } = await updateIssue(issueId, issuePatch)
       if (error) {
         alert(`Erro ao atualizar pendência: ${error.message}`)
         return
@@ -1116,6 +1153,28 @@ export default function UnidadePage() {
           old_value: { status: oldStatus },
           new_value: { status: newStatus },
         })
+      }
+
+      await loadAll()
+    } finally {
+      setBusyStageId(null)
+    }
+  }
+
+  async function saveStageDueDate(unitStageId, dueDateValue) {
+    try {
+      setBusyStageId(unitStageId)
+
+      const current = stages.find((s) => s.id === unitStageId)
+      const nextDueDate = safeStr(dueDateValue).trim() || null
+      const currentDueDate = safeStr(current?.due_date).trim() || null
+
+      if (currentDueDate === nextDueDate) return
+
+      const { error } = await supabase.from('unit_stages').update({ due_date: nextDueDate }).eq('id', unitStageId)
+      if (error) {
+        alert(`Erro ao salvar previsão: ${error.message}`)
+        return
       }
 
       await loadAll()
@@ -2101,6 +2160,54 @@ export default function UnidadePage() {
 
               <div
                 style={{
+                  marginTop: 12,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 12,
+                    padding: 12,
+                    background: '#fafafa',
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Início</div>
+                  <div style={{ fontSize: 14, fontWeight: 800 }}>{formatDateOnly(s.started_at) || '—'}</div>
+                </div>
+
+                <div
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 12,
+                    padding: 12,
+                    background: '#fafafa',
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Previsão</div>
+                  <input
+                    type="date"
+                    value={toDateInputValue(s.due_date)}
+                    onChange={(e) => saveStageDueDate(s.id, e.target.value)}
+                    disabled={isBusy || isUploading}
+                    style={{
+                      ...{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 12,
+                        border: '1px solid #ddd',
+                        outline: 'none',
+                        background: '#fff',
+                      },
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div
+                style={{
                   marginTop: 14,
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
@@ -2407,7 +2514,10 @@ export default function UnidadePage() {
                         </div>
                         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
                           <span>Responsável: <b>{assigneeName}</b></span>
+                          <span>Início: <b>{formatDateOnly(issue.started_at) || '—'}</b></span>
+                          <span>Previsão: <b>{formatDateOnly(issue.due_date) || '—'}</b></span>
                           <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
+                          {isIssueOverdue(issue) ? <span style={{ color: '#b00020', fontWeight: 900 }}>Atrasada</span> : null}
                         </div>
                       </div>
 
@@ -2579,6 +2689,22 @@ export default function UnidadePage() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Previsão</div>
+              <input
+                type="date"
+                value={issueForm.due_date}
+                onChange={(e) => setIssueForm((prev) => ({ ...prev, due_date: e.target.value }))}
+                disabled={issueModalBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                }}
+              />
             </div>
           </div>
 
