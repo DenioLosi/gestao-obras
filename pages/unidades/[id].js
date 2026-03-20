@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
-import { createIssue, listIssuesByUnit, updateIssue } from '../../lib/issues-service'
+import { createIssue, deleteIssue, listIssuesByUnit, updateIssue } from '../../lib/issues-service'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -31,6 +31,24 @@ const STATUS_PT = {
   pending: 'Pendente',
   in_progress: 'Em andamento',
   done: 'Concluído',
+}
+
+const STATUS_TONE = {
+  pending: {
+    background: '#FEE2E2',
+    color: '#991B1B',
+    hover: '#FECACA',
+  },
+  in_progress: {
+    background: '#FEF3C7',
+    color: '#92400E',
+    hover: '#FDE68A',
+  },
+  done: {
+    background: '#DCFCE7',
+    color: '#166534',
+    hover: '#BBF7D0',
+  },
 }
 
 function safeStr(v) {
@@ -73,6 +91,59 @@ function formatIssueStatusLabel(status) {
 
 function formatIssuePriorityLabel(priority) {
   return ISSUE_PRIORITY_PT[priority] || priority || 'â€”'
+}
+
+function normalizeStageStatus(status) {
+  if (status === 'pending' || status === 'in_progress' || status === 'done') return status
+  return 'pending'
+}
+
+function issueStatusToStageStatus(status) {
+  if (status === 'resolved') return 'done'
+  if (status === 'in_progress') return 'in_progress'
+  return 'pending'
+}
+
+function getStatusTone(status) {
+  return STATUS_TONE[normalizeStageStatus(status)] || STATUS_TONE.pending
+}
+
+function getIssueStatusTone(status) {
+  return STATUS_TONE[issueStatusToStageStatus(status)] || STATUS_TONE.pending
+}
+
+function buildStatusPillStyle(tone, { interactive = false, expanded = false } = {}) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '6px 12px',
+    minHeight: 30,
+    borderRadius: 999,
+    border: '1px solid transparent',
+    background: tone.background,
+    color: tone.color,
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.2,
+    whiteSpace: 'nowrap',
+    transition: 'background-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease',
+    cursor: interactive ? 'pointer' : 'default',
+    width: expanded ? '100%' : 'auto',
+  }
+}
+
+function serializeIssueForLog(issue) {
+  if (!issue) return null
+  return {
+    id: issue.id || null,
+    title: safeStr(issue.title).trim(),
+    description: safeStr(issue.description).trim(),
+    priority: safeStr(issue.priority) || 'medium',
+    assigned_to: safeStr(issue.assigned_to) || null,
+    status: safeStr(issue.status) || 'open',
+  }
 }
 
 function buildLogDescription(log) {
@@ -125,6 +196,37 @@ function buildLogDescription(log) {
   if (action === 'stage_copied') {
     const name = safeStr(newValue?.new_stage_name).trim()
     return name ? `copiou a etapa para "${name}"` : 'copiou a etapa'
+  }
+
+  if (action === 'issue_created') {
+    const title = safeStr(newValue?.title).trim()
+    return title ? `criou a pendência "${title}"` : 'criou uma pendência'
+  }
+
+  if (action === 'issue_updated') {
+    const from = safeStr(oldValue?.title).trim()
+    const to = safeStr(newValue?.title).trim()
+    if (from && to && from !== to) return `editou a pendência "${from}" para "${to}"`
+    if (to) return `editou a pendência "${to}"`
+    return 'editou uma pendência'
+  }
+
+  if (action === 'issue_deleted') {
+    const title = safeStr(oldValue?.title).trim()
+    return title ? `excluiu a pendência "${title}"` : 'excluiu uma pendência'
+  }
+
+  if (action === 'issue_status_changed') {
+    const title = safeStr(newValue?.title || oldValue?.title).trim()
+    const from = formatIssueStatusLabel(oldValue?.status)
+    const to = formatIssueStatusLabel(newValue?.status)
+    if (title && oldValue?.status && newValue?.status) {
+      return `alterou o status da pendência "${title}" de "${from}" para "${to}"`
+    }
+    if (title && newValue?.status) {
+      return `alterou o status da pendência "${title}" para "${to}"`
+    }
+    return 'alterou o status de uma pendência'
   }
 
   return action ? action.replaceAll('_', ' ') : 'realizou uma ação'
@@ -407,7 +509,7 @@ export default function UnidadePage() {
   const [uploadingStageId, setUploadingStageId] = useState(null)
   const [deletingPhotoId, setDeletingPhotoId] = useState(null)
 
-  const [editingStatusStageId, setEditingStatusStageId] = useState(null)
+  const [openStatusMenuStageId, setOpenStatusMenuStageId] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
 
   const [manageOpen, setManageOpen] = useState(false)
@@ -441,6 +543,13 @@ export default function UnidadePage() {
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [openActionMenuStageId])
+
+  useEffect(() => {
+    if (!openStatusMenuStageId) return
+    const close = () => setOpenStatusMenuStageId(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [openStatusMenuStageId])
 
   const issueAssigneeNameById = useMemo(
     () =>
@@ -517,6 +626,19 @@ export default function UnidadePage() {
     setIssueForm({
       ...EMPTY_ISSUE_FORM,
       unit_stage_id: stageId,
+    })
+  }
+
+  async function createStageLog(unitStageId, action, oldValue, newValue, actorId) {
+    const userId = actorId || user?.id
+    if (!unitStageId || !userId) return
+
+    await supabase.from('unit_stage_logs').insert({
+      unit_stage_id: unitStageId,
+      user_id: userId,
+      action,
+      old_value: oldValue,
+      new_value: newValue,
     })
   }
 
@@ -825,6 +947,7 @@ export default function UnidadePage() {
     const currentStageId = safeStr(issueForm.unit_stage_id || issueModalStageId)
     const trimmedTitle = safeStr(issueForm.title).trim()
     const currentUser = user || (await ensureAuth())
+    const existingIssue = editingIssueId ? issues.find((issue) => issue.id === editingIssueId) || null : null
     if (!currentStageId) {
       alert('Selecione uma etapa para a pendência.')
       return
@@ -870,6 +993,26 @@ export default function UnidadePage() {
         return
       }
 
+      const savedIssue = result.data || { id: editingIssueId, ...payload }
+
+      if (editingIssueId) {
+        await createStageLog(
+          currentStageId,
+          'issue_updated',
+          serializeIssueForLog(existingIssue),
+          serializeIssueForLog(savedIssue),
+          currentUser?.id
+        )
+      } else {
+        await createStageLog(
+          currentStageId,
+          'issue_created',
+          null,
+          serializeIssueForLog(savedIssue),
+          currentUser?.id
+        )
+      }
+
       setIssueModalOpen(false)
       setIssueModalStageId('')
       resetIssueForm()
@@ -883,23 +1026,62 @@ export default function UnidadePage() {
     try {
       setIssueSavingId(issueId)
 
-      const { error } = await updateIssue(issueId, { status: nextStatus })
+      const currentUser = user || (await ensureAuth())
+      const currentIssue = issues.find((issue) => issue.id === issueId)
+      if (!currentIssue || !currentUser?.id) return
+
+      const { data, error } = await updateIssue(issueId, { status: nextStatus })
       if (error) {
         alert(`Erro ao atualizar pendência: ${error.message}`)
         return
       }
 
-      setIssues((prev) =>
-        prev.map((issue) =>
-          issue.id === issueId
-            ? {
-                ...issue,
-                status: nextStatus,
-                updated_at: new Date().toISOString(),
-              }
-            : issue
-        )
+      await createStageLog(
+        currentIssue.unit_stage_id,
+        'issue_status_changed',
+        serializeIssueForLog(currentIssue),
+        serializeIssueForLog(data || { ...currentIssue, status: nextStatus }),
+        currentUser.id
       )
+
+      await loadAll()
+    } finally {
+      setIssueSavingId('')
+    }
+  }
+
+  async function deleteIssueRecord(issue) {
+    if (!issue?.id) return
+
+    const currentUser = user || (await ensureAuth())
+    if (!currentUser?.id) {
+      alert('Não foi possível identificar o usuário para excluir a pendência.')
+      return
+    }
+
+    const ok = window.confirm(`Excluir a pendência "${safeStr(issue.title).trim() || 'Sem título'}"?`)
+    if (!ok) return
+
+    try {
+      setIssueSavingId(issue.id)
+
+      const { error } = await deleteIssue(issue.id)
+      if (error) {
+        alert(`Erro ao excluir pendência: ${error.message}`)
+        return
+      }
+
+      setIssues((prev) => prev.filter((row) => row.id !== issue.id))
+
+      await createStageLog(
+        issue.unit_stage_id,
+        'issue_deleted',
+        serializeIssueForLog(issue),
+        null,
+        currentUser.id
+      )
+
+      await loadAll()
     } finally {
       setIssueSavingId('')
     }
@@ -1702,6 +1884,7 @@ export default function UnidadePage() {
                       background: '#fff',
                       fontWeight: 800,
                       whiteSpace: 'nowrap',
+                      display: 'none',
                     }}
                     title="Status atual"
                   >
@@ -1711,18 +1894,19 @@ export default function UnidadePage() {
                   <button
                     type="button"
                     disabled={isBusy || isUploading}
-                    onClick={() => setEditingStatusStageId((prev) => (prev === s.id ? null : s.id))}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOpenStatusMenuStageId((prev) => (prev === s.id ? null : s.id))
+                    }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone(s.status), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
                       whiteSpace: 'nowrap',
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
-                    Alterar
+                    <span>{STATUS_PT[s.status] || 'â€”'}</span>
+                    <span style={{ fontSize: 11 }}>{openStatusMenuStageId === s.id ? '▲' : '▼'}</span>
                   </button>
 
                   <button
@@ -1860,22 +2044,20 @@ export default function UnidadePage() {
                 </div>
               </div>
 
-              {editingStatusStageId === s.id ? (
+              {openStatusMenuStageId === s.id ? (
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button
                     type="button"
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'pending')
-                      setEditingStatusStageId(null)
+                      setOpenStatusMenuStageId(null)
                     }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone('pending'), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
+                      background: s.status === 'pending' ? getStatusTone('pending').hover : getStatusTone('pending').background,
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
                     Pendente
@@ -1886,15 +2068,13 @@ export default function UnidadePage() {
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'in_progress')
-                      setEditingStatusStageId(null)
+                      setOpenStatusMenuStageId(null)
                     }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone('in_progress'), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
+                      background: s.status === 'in_progress' ? getStatusTone('in_progress').hover : getStatusTone('in_progress').background,
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
                     Em andamento
@@ -1905,15 +2085,13 @@ export default function UnidadePage() {
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'done')
-                      setEditingStatusStageId(null)
+                      setOpenStatusMenuStageId(null)
                     }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone('done'), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
+                      background: s.status === 'done' ? getStatusTone('done').hover : getStatusTone('done').background,
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
                     Concluído
@@ -2217,7 +2395,7 @@ export default function UnidadePage() {
                       <div style={{ display: 'grid', gap: 6 }}>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                           <div style={{ fontSize: 15, fontWeight: 800 }}>{issue.title || 'Sem título'}</div>
-                          <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, border: '1px solid #ddd', fontWeight: 800 }}>
+                          <span style={{ ...buildStatusPillStyle(getIssueStatusTone(issue.status)), fontSize: 12, minHeight: 26, padding: '4px 8px' }}>
                             {formatIssueStatusLabel(issue.status)}
                           </span>
                           <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, border: '1px solid #ddd', background: '#f7f7f7', fontWeight: 800 }}>
@@ -2233,26 +2411,46 @@ export default function UnidadePage() {
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => openEditIssueModal(issue)}
-                        disabled={savingStatus || issueModalBusy}
-                        style={{
-                          padding: '8px 10px',
-                          borderRadius: 10,
-                          border: '1px solid #ddd',
-                          background: '#fff',
-                          cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
-                          fontWeight: 700,
-                        }}
-                      >
-                        Editar
-                      </button>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          onClick={() => openEditIssueModal(issue)}
+                          disabled={savingStatus || issueModalBusy}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: 10,
+                            border: '1px solid #ddd',
+                            background: '#fff',
+                            cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Editar
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => deleteIssueRecord(issue)}
+                          disabled={savingStatus || issueModalBusy}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: 10,
+                            border: '1px solid #f3d0d0',
+                            background: '#fff5f5',
+                            color: '#991B1B',
+                            cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Excluir pendência
+                        </button>
+                      </div>
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       {['open', 'in_progress', 'resolved'].map((status) => {
                         const active = issue.status === status
+                        const tone = getIssueStatusTone(status)
                         return (
                           <button
                             key={status}
@@ -2260,13 +2458,10 @@ export default function UnidadePage() {
                             disabled={savingStatus || issueModalBusy || active}
                             onClick={() => changeIssueStatus(issue.id, status)}
                             style={{
-                              padding: '8px 10px',
-                              borderRadius: 10,
-                              border: '1px solid #ddd',
-                              background: active ? '#111' : '#fff',
-                              color: active ? '#fff' : '#111',
+                              ...buildStatusPillStyle(tone, { interactive: true }),
+                              background: active ? tone.hover : tone.background,
                               cursor: savingStatus || issueModalBusy || active ? 'not-allowed' : 'pointer',
-                              fontWeight: 700,
+                              opacity: savingStatus || issueModalBusy ? 0.65 : 1,
                             }}
                           >
                             {formatIssueStatusLabel(status)}

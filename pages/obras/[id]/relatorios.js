@@ -16,6 +16,30 @@ const STATUS_LABEL = {
   done: 'Concluída',
 }
 
+const ISSUE_STATUS_LABEL = {
+  open: 'Aberta',
+  in_progress: 'Em andamento',
+  resolved: 'Resolvida',
+}
+
+const STATUS_TONE = {
+  pending: {
+    background: '#FEE2E2',
+    color: '#991B1B',
+    hover: '#FECACA',
+  },
+  in_progress: {
+    background: '#FEF3C7',
+    color: '#92400E',
+    hover: '#FDE68A',
+  },
+  done: {
+    background: '#DCFCE7',
+    color: '#166534',
+    hover: '#BBF7D0',
+  },
+}
+
 const PHOTO_BUCKET = 'unit-stage-photos'
 const REPORT_LOGO_URL = '/logo-relatorio.png'
 
@@ -42,8 +66,53 @@ function normalizeStatus(status) {
   return s
 }
 
+function normalizeIssueStatus(status) {
+  const s = safeStr(status).trim().toLowerCase()
+  if (s === 'open') return 'open'
+  if (s === 'in_progress') return 'in_progress'
+  if (s === 'resolved') return 'resolved'
+  return s
+}
+
+function issueStatusToStageStatus(status) {
+  const normalized = normalizeIssueStatus(status)
+  if (normalized === 'resolved') return 'done'
+  if (normalized === 'in_progress') return 'in_progress'
+  return 'pending'
+}
+
 function statusLabel(status) {
   return STATUS_LABEL[normalizeStatus(status)] || safeStr(status) || '-'
+}
+
+function issueStatusLabel(status) {
+  return ISSUE_STATUS_LABEL[normalizeIssueStatus(status)] || safeStr(status) || '-'
+}
+
+function getStatusTone(status) {
+  return STATUS_TONE[normalizeStatus(status)] || STATUS_TONE.pending
+}
+
+function getIssueStatusTone(status) {
+  return STATUS_TONE[issueStatusToStageStatus(status)] || STATUS_TONE.pending
+}
+
+function buildPillStyle(tone, active = false) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: '6px 12px',
+    borderRadius: 999,
+    border: '1px solid transparent',
+    background: active ? tone.hover : tone.background,
+    color: tone.color,
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.2,
+    transition: 'background-color 160ms ease, opacity 160ms ease',
+  }
 }
 
 function formatDate(value) {
@@ -122,6 +191,8 @@ function getPhotoKindLabel(kind) {
 
 function actionToHuman(log) {
   const action = safeStr(log?.action).toLowerCase()
+  const oldValue = parseMaybeJson(log?.old_value) || {}
+  const newValue = parseMaybeJson(log?.new_value) || {}
 
   if (action === 'status_changed') {
     const fromStatus = oldStatusFromLog(log)
@@ -135,12 +206,35 @@ function actionToHuman(log) {
   }
 
   if (action === 'notes_updated') {
-    const newValue = parseMaybeJson(log?.new_value)
     const noteText = safeStr(newValue?.notes).trim()
     return noteText ? `Observação atualizada: ${noteText}` : 'Observação removida'
   }
 
   if (action === 'photo_added') return 'Foto registrada'
+  if (action === 'issue_created') {
+    const title = safeStr(newValue?.title).trim()
+    return title ? `Pendência criada: ${title}` : 'Pendência criada'
+  }
+  if (action === 'issue_updated') {
+    const title = safeStr(newValue?.title || oldValue?.title).trim()
+    return title ? `Pendência atualizada: ${title}` : 'Pendência atualizada'
+  }
+  if (action === 'issue_deleted') {
+    const title = safeStr(oldValue?.title).trim()
+    return title ? `Pendência excluída: ${title}` : 'Pendência excluída'
+  }
+  if (action === 'issue_status_changed') {
+    const title = safeStr(newValue?.title || oldValue?.title).trim()
+    const fromStatus = issueStatusLabel(oldValue?.status)
+    const toStatus = issueStatusLabel(newValue?.status)
+    if (title && oldValue?.status && newValue?.status) {
+      return `Pendência "${title}" mudou de ${fromStatus} para ${toStatus}`
+    }
+    if (title && newValue?.status) {
+      return `Status da pendência "${title}" alterado para ${toStatus}`
+    }
+    return 'Status de pendência alterado'
+  }
   return ''
 }
 
@@ -494,6 +588,7 @@ export default function ObraRelatoriosPage() {
   const [units, setUnits] = useState([])
   const [stages, setStages] = useState([])
   const [unitStages, setUnitStages] = useState([])
+  const [issues, setIssues] = useState([])
   const [logs, setLogs] = useState([])
   const [photos, setPhotos] = useState([])
   const [profilesMap, setProfilesMap] = useState({})
@@ -505,6 +600,7 @@ export default function ObraRelatoriosPage() {
   const [endDate, setEndDate] = useState(today)
 
   const [statusFilter, setStatusFilter] = useState('')
+  const [entryTypeFilter, setEntryTypeFilter] = useState('all')
   const [unitFilter, setUnitFilter] = useState([])
   const [stageFilter, setStageFilter] = useState([])
   const [textFilter, setTextFilter] = useState('')
@@ -543,6 +639,7 @@ export default function ObraRelatoriosPage() {
       setUnits([])
       setStages([])
       setUnitStages([])
+      setIssues([])
       setLogs([])
       setPhotos([])
       setProfilesMap({})
@@ -552,7 +649,7 @@ export default function ObraRelatoriosPage() {
 
     setProject(projectRow)
 
-    const [unitsRes, stagesRes, unitStagesRes, logsRes, photosRes] = await Promise.all([
+    const [unitsRes, stagesRes, unitStagesRes, issuesRes, logsRes, photosRes] = await Promise.all([
       supabase
         .from('units')
         .select('id, project_id, identifier, status, progress, is_active')
@@ -571,6 +668,12 @@ export default function ObraRelatoriosPage() {
         .order('order_index', { ascending: true }),
 
       supabase
+        .from('issues')
+        .select('id, project_id, unit_id, unit_stage_id, title, description, priority, assigned_to, status, created_at, updated_at')
+        .eq('project_id', projectId)
+        .order('updated_at', { ascending: false }),
+
+      supabase
         .from('unit_stage_logs')
         .select('id, unit_stage_id, user_id, action, old_value, new_value, created_at')
         .order('created_at', { ascending: false }),
@@ -581,11 +684,12 @@ export default function ObraRelatoriosPage() {
         .order('created_at', { ascending: false }),
     ])
 
-    if (unitsRes.error || stagesRes.error || unitStagesRes.error || logsRes.error || photosRes.error) {
+    if (unitsRes.error || stagesRes.error || unitStagesRes.error || issuesRes.error || logsRes.error || photosRes.error) {
       alert(
         unitsRes.error?.message ||
           stagesRes.error?.message ||
           unitStagesRes.error?.message ||
+          issuesRes.error?.message ||
           logsRes.error?.message ||
           photosRes.error?.message ||
           'Erro ao carregar dados'
@@ -597,6 +701,7 @@ export default function ObraRelatoriosPage() {
     const unitsRows = Array.isArray(unitsRes.data) ? unitsRes.data : []
     const stagesRows = Array.isArray(stagesRes.data) ? stagesRes.data : []
     const unitStagesRowsRaw = Array.isArray(unitStagesRes.data) ? unitStagesRes.data : []
+    const issuesRowsRaw = Array.isArray(issuesRes.data) ? issuesRes.data : []
     const logsRowsRaw = Array.isArray(logsRes.data) ? logsRes.data : []
     const photosRowsRaw = Array.isArray(photosRes.data) ? photosRes.data : []
 
@@ -606,6 +711,7 @@ export default function ObraRelatoriosPage() {
     const unitStagesRows = unitStagesRowsRaw.filter((row) => unitIds.has(row.unit_id) && stageIds.has(row.stage_id))
     const unitStageIds = new Set(unitStagesRows.map((row) => row.id))
 
+    const issuesRows = issuesRowsRaw.filter((row) => row?.unit_id && unitIds.has(row.unit_id))
     const logsRows = logsRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
     const photosRows = photosRowsRaw.filter((row) => row?.unit_stage_id && unitStageIds.has(row.unit_stage_id))
 
@@ -620,6 +726,7 @@ export default function ObraRelatoriosPage() {
     setUnits(unitsRows)
     setStages(stagesRows)
     setUnitStages(unitStagesRows)
+    setIssues(issuesRows)
     setLogs(logsRows)
     setPhotos(photosRows)
     setProfilesMap(nextProfilesMap)
@@ -872,6 +979,23 @@ export default function ObraRelatoriosPage() {
     })
   }, [unitStages, unitsById, stagesById])
 
+  const enrichedIssues = useMemo(() => {
+    return issues.map((row) => {
+      const unitStage = unitStagesById[row.unit_stage_id] || null
+      const unit = unitsById[row.unit_id] || unitsById[unitStage?.unit_id] || null
+      const stage = stagesById[unitStage?.stage_id] || null
+      return {
+        ...row,
+        unit,
+        unitStage,
+        stage,
+        stage_id: unitStage?.stage_id || null,
+        stage_display_name: safeStr(unitStage?.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa',
+        normalized_status: issueStatusToStageStatus(row.status),
+      }
+    })
+  }, [issues, unitStagesById, unitsById, stagesById])
+
   const filteredObservationRows = useMemo(() => {
     const unitFilterSet = new Set(unitFilter)
     const stageFilterSet = new Set(stageFilter)
@@ -900,25 +1024,73 @@ export default function ObraRelatoriosPage() {
       })
   }, [enrichedUnitStages, statusFilter, unitFilter, stageFilter, textFilter, onlyWithObservation])
 
-  const observationSummary = useMemo(() => {
+  const filteredIssueRows = useMemo(() => {
+    const unitFilterSet = new Set(unitFilter)
+    const stageFilterSet = new Set(stageFilter)
+    const text = safeStr(textFilter).trim().toLowerCase()
+
+    return enrichedIssues
+      .filter((row) => {
+        if (statusFilter && normalizeStatus(row.normalized_status) !== normalizeStatus(statusFilter)) return false
+        if (unitFilterSet.size > 0 && !unitFilterSet.has(row.unit_id)) return false
+        if (stageFilterSet.size > 0 && !stageFilterSet.has(row.stage_id)) return false
+
+        if (text) {
+          const joined = [
+            safeStr(row.unit?.identifier),
+            safeStr(row.stage_display_name),
+            safeStr(row.title),
+            safeStr(row.description),
+            issueStatusLabel(row.status),
+          ]
+            .join(' ')
+            .toLowerCase()
+          if (!joined.includes(text)) return false
+        }
+
+        return true
+      })
+      .sort((a, b) => {
+        const unitCmp = safeStr(a.unit?.identifier).localeCompare(safeStr(b.unit?.identifier), 'pt-BR')
+        if (unitCmp !== 0) return unitCmp
+        return new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+      })
+  }, [enrichedIssues, statusFilter, unitFilter, stageFilter, textFilter])
+
+  const reportSummary = useMemo(() => {
     const counts = {
-      total: filteredObservationRows.length,
+      total: 0,
+      observations: filteredObservationRows.length,
+      issues: filteredIssueRows.length,
       pending: 0,
       in_progress: 0,
       done: 0,
       with_notes: 0,
     }
 
-    filteredObservationRows.forEach((row) => {
-      const s = normalizeStatus(row.status)
-      if (s === 'pending') counts.pending += 1
-      if (s === 'in_progress') counts.in_progress += 1
-      if (s === 'done') counts.done += 1
-      if (safeStr(row.notes).trim()) counts.with_notes += 1
-    })
+    if (entryTypeFilter !== 'issues') {
+      filteredObservationRows.forEach((row) => {
+        const s = normalizeStatus(row.status)
+        counts.total += 1
+        if (s === 'pending') counts.pending += 1
+        if (s === 'in_progress') counts.in_progress += 1
+        if (s === 'done') counts.done += 1
+        if (safeStr(row.notes).trim()) counts.with_notes += 1
+      })
+    }
+
+    if (entryTypeFilter !== 'observations') {
+      filteredIssueRows.forEach((row) => {
+        const s = normalizeStatus(row.normalized_status)
+        counts.total += 1
+        if (s === 'pending') counts.pending += 1
+        if (s === 'in_progress') counts.in_progress += 1
+        if (s === 'done') counts.done += 1
+      })
+    }
 
     return counts
-  }, [filteredObservationRows])
+  }, [entryTypeFilter, filteredObservationRows, filteredIssueRows])
 
   async function generateDiaryPdf() {
     if (!project) return
@@ -1154,6 +1326,10 @@ export default function ObraRelatoriosPage() {
         ? stages.filter((s) => stageFilter.includes(s.id)).map((s) => s.name).join(', ')
         : 'Todas'
     )
+    drawLabelValue(
+      'Tipo exibido',
+      entryTypeFilter === 'observations' ? 'Observações' : entryTypeFilter === 'issues' ? 'Pendências' : 'Todos'
+    )
     drawLabelValue('Texto pesquisado', textFilter || '-')
     drawLabelValue('Somente com observação', onlyWithObservation ? 'Sim' : 'Não')
 
@@ -1161,17 +1337,22 @@ export default function ObraRelatoriosPage() {
 
     drawSectionTitle('Resumo do relatório')
     resetSummaryCards()
-    drawSummaryCard('Total filtrado', observationSummary.total)
-    drawSummaryCard('Pendentes', observationSummary.pending)
-    drawSummaryCard('Em andamento', observationSummary.in_progress)
-    drawSummaryCard('Concluídas', observationSummary.done)
-    drawSummaryCard('Com observação', observationSummary.with_notes)
+    drawSummaryCard('Total filtrado', reportSummary.total)
+    drawSummaryCard('Observações', reportSummary.observations)
+    drawSummaryCard('Pendências', reportSummary.issues)
+    drawSummaryCard('Pendentes', reportSummary.pending)
+    drawSummaryCard('Em andamento', reportSummary.in_progress)
+    drawSummaryCard('Concluídas', reportSummary.done)
     finishSummaryCards()
     setY(getY() + 4)
 
     drawSectionTitle('Itens encontrados')
 
-    if (filteredObservationRows.length === 0) {
+    if (
+      (entryTypeFilter === 'observations' && filteredObservationRows.length === 0) ||
+      (entryTypeFilter === 'issues' && filteredIssueRows.length === 0) ||
+      (entryTypeFilter === 'all' && filteredObservationRows.length === 0 && filteredIssueRows.length === 0)
+    ) {
       writeParagraph('Nenhum registro encontrado com os filtros selecionados.', {
         fontSize: 10,
         lineHeight: 10.5,
@@ -1200,6 +1381,32 @@ export default function ObraRelatoriosPage() {
 
         drawSectionTitle('Observação')
         writeParagraph(safeStr(row.notes).trim() || 'Sem observação', {
+          fontSize: 9,
+          lineHeight: 11,
+          bottomGap: 2,
+        })
+
+        drawDivider()
+      })
+    }
+
+    if (entryTypeFilter !== 'observations') {
+      filteredIssueRows.forEach((row) => {
+        addPageIfNeeded(38)
+
+        pdf.setFillColor(245, 245, 245)
+        pdf.rect(margin, getY(), contentWidth, 9, 'F')
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(11.5)
+        pdf.text(`Pendência • Unidade ${safeStr(row.unit?.identifier) || '-'}`, margin + 3, getY() + 6)
+        setY(getY() + 14)
+
+        drawLabelValue('Etapa', row.stage_display_name)
+        drawLabelValue('Status', issueStatusLabel(row.status))
+        drawLabelValue('Título', safeStr(row.title).trim() || 'Sem título')
+        drawLabelValue('Última atualização', formatDateTime(row.updated_at || row.created_at) || '-')
+
+        writeParagraph(safeStr(row.description).trim() || 'Sem descrição.', {
           fontSize: 9,
           lineHeight: 11,
           bottomGap: 2,
@@ -1428,6 +1635,39 @@ export default function ObraRelatoriosPage() {
         <div style={{ ...cardStyle, marginBottom: 18 }}>
           <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Filtros de observações e pendências</div>
 
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            <button
+              type="button"
+              onClick={() => setEntryTypeFilter('observations')}
+              style={{
+                ...softButtonStyle,
+                ...(entryTypeFilter === 'observations' ? buildPillStyle(getStatusTone('pending'), true) : {}),
+              }}
+            >
+              Observações
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntryTypeFilter('issues')}
+              style={{
+                ...softButtonStyle,
+                ...(entryTypeFilter === 'issues' ? buildPillStyle(getStatusTone('in_progress'), true) : {}),
+              }}
+            >
+              Pendências
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntryTypeFilter('all')}
+              style={{
+                ...softButtonStyle,
+                ...(entryTypeFilter === 'all' ? buildPillStyle(getStatusTone('done'), true) : {}),
+              }}
+            >
+              Todos
+            </button>
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
             <div>
               <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
@@ -1535,6 +1775,87 @@ export default function ObraRelatoriosPage() {
                 ))}
               </div>
             </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 18 }}>
+            <div style={{ ...cardStyle, background: '#fffaf5' }}>
+              <div style={{ fontSize: 12, color: '#666' }}>Total filtrado</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.total}</div>
+            </div>
+            <div style={{ ...cardStyle, background: '#fff' }}>
+              <div style={{ fontSize: 12, color: '#666' }}>Observações</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.observations}</div>
+            </div>
+            <div style={{ ...cardStyle, background: '#fff' }}>
+              <div style={{ fontSize: 12, color: '#666' }}>Pendências</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.issues}</div>
+            </div>
+            <div style={{ ...cardStyle, background: getStatusTone('pending').background, color: getStatusTone('pending').color }}>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>Pendentes</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.pending}</div>
+            </div>
+            <div style={{ ...cardStyle, background: getStatusTone('in_progress').background, color: getStatusTone('in_progress').color }}>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>Em andamento</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.in_progress}</div>
+            </div>
+            <div style={{ ...cardStyle, background: getStatusTone('done').background, color: getStatusTone('done').color }}>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>Concluídos</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.done}</div>
+            </div>
+          </div>
+
+          <div style={{ ...cardStyle, marginTop: 18 }}>
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Itens encontrados</div>
+
+            {entryTypeFilter !== 'issues' && filteredObservationRows.length > 0 ? (
+              <div style={{ display: 'grid', gap: 12, marginBottom: entryTypeFilter === 'all' && filteredIssueRows.length > 0 ? 18 : 0 }}>
+                {filteredObservationRows.map((row) => (
+                  <div key={`obs-${row.id}`} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fff' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Observação</div>
+                        <div style={{ fontSize: 16, fontWeight: 900 }}>
+                          Unidade {safeStr(row.unit?.identifier) || '-'} • {row.stage_display_name}
+                        </div>
+                      </div>
+                      <span style={buildPillStyle(getStatusTone(row.status))}>{statusLabel(row.status)}</span>
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 14, lineHeight: 1.6, color: '#374151' }}>
+                      {safeStr(row.notes).trim() || 'Sem observação'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {entryTypeFilter !== 'observations' && filteredIssueRows.length > 0 ? (
+              <div style={{ display: 'grid', gap: 12 }}>
+                {filteredIssueRows.map((row) => (
+                  <div key={`issue-${row.id}`} style={{ border: '1px solid #eee', borderRadius: 14, padding: 14, background: '#fff' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Pendência</div>
+                        <div style={{ fontSize: 16, fontWeight: 900 }}>
+                          Unidade {safeStr(row.unit?.identifier) || '-'} • {row.stage_display_name}
+                        </div>
+                      </div>
+                      <span style={buildPillStyle(getIssueStatusTone(row.status))}>{issueStatusLabel(row.status)}</span>
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 15, fontWeight: 800 }}>{safeStr(row.title).trim() || 'Sem título'}</div>
+                    <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.6, color: '#374151' }}>
+                      {safeStr(row.description).trim() || 'Sem descrição.'}
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+                      Atualizada em: <b>{formatDateTime(row.updated_at || row.created_at) || '-'}</b>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {reportSummary.total === 0 ? (
+              <div style={{ color: '#666' }}>Nenhum registro encontrado com os filtros selecionados.</div>
+            ) : null}
           </div>
         </div>
       )}
