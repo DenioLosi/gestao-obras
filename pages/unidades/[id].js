@@ -824,16 +824,22 @@ export default function UnidadePage() {
   async function saveIssue() {
     const currentStageId = safeStr(issueForm.unit_stage_id || issueModalStageId)
     const trimmedTitle = safeStr(issueForm.title).trim()
+    const currentUser = user || (await ensureAuth())
     if (!currentStageId) {
       alert('Selecione uma etapa para a pendência.')
       return
     }
     if (!trimmedTitle) {
-      alert('Informe o título da issue.')
+      alert('Informe o título da pendência.')
       return
     }
     if (!editingIssueId && (!unit?.project_id || !unit?.tenant_id)) {
       alert('Não foi possível identificar a obra da unidade para criar a pendência.')
+      return
+    }
+
+    if (!editingIssueId && !currentUser?.id) {
+      alert('Não foi possível identificar o usuário para criar a pendência.')
       return
     }
 
@@ -855,11 +861,12 @@ export default function UnidadePage() {
             tenant_id: unit?.tenant_id,
             project_id: unit?.project_id,
             unit_id: unitId,
+            created_by: currentUser.id,
             ...payload,
           })
 
       if (result.error) {
-        alert(`Erro ao salvar issue: ${result.error.message}`)
+        alert(`Erro ao salvar pendência: ${result.error.message}`)
         return
       }
 
@@ -878,7 +885,7 @@ export default function UnidadePage() {
 
       const { error } = await updateIssue(issueId, { status: nextStatus })
       if (error) {
-        alert(`Erro ao atualizar issue: ${error.message}`)
+        alert(`Erro ao atualizar pendência: ${error.message}`)
         return
       }
 
@@ -2283,7 +2290,7 @@ export default function UnidadePage() {
               value={issueForm.title}
               onChange={(e) => setIssueForm((prev) => ({ ...prev, title: e.target.value }))}
               disabled={issueModalBusy}
-              placeholder="Resumo da issue"
+              placeholder="Resumo da pendência"
               style={{
                 padding: '10px 12px',
                 borderRadius: 12,
@@ -2299,7 +2306,7 @@ export default function UnidadePage() {
               value={issueForm.description}
               onChange={(e) => setIssueForm((prev) => ({ ...prev, description: e.target.value }))}
               disabled={issueModalBusy}
-              placeholder="Detalhes da issue"
+              placeholder="Detalhes da pendência"
               style={{
                 width: '100%',
                 minHeight: 140,
@@ -2415,7 +2422,7 @@ export default function UnidadePage() {
                 fontWeight: 900,
               }}
             >
-              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar issue'}
+              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar pendência'}
             </button>
           </div>
         </div>
