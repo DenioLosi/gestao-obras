@@ -167,6 +167,15 @@ function formatDateTime(value) {
   return d.toLocaleString('pt-BR')
 }
 
+function formatDateOnly(value) {
+  if (!value) return ''
+  const raw = safeStr(value).trim()
+  const dateValue = raw.length <= 10 ? `${raw}T12:00:00` : raw
+  const d = new Date(dateValue)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('pt-BR')
+}
+
 function toInputDate(value) {
   if (!value) return ''
   const d = new Date(value)
@@ -620,6 +629,7 @@ export default function ObraRelatoriosPage() {
   const [logs, setLogs] = useState([])
   const [photos, setPhotos] = useState([])
   const [profilesMap, setProfilesMap] = useState({})
+  const [reportPhotoUrls, setReportPhotoUrls] = useState({})
 
   const [mode, setMode] = useState(REPORT_MODE.diary)
 
@@ -693,12 +703,12 @@ export default function ObraRelatoriosPage() {
 
       supabase
         .from('unit_stages')
-        .select('id, unit_id, stage_id, status, notes, custom_name, order_index, is_active')
+        .select('id, unit_id, stage_id, status, started_at, due_date, notes, custom_name, order_index, is_active')
         .order('order_index', { ascending: true }),
 
       supabase
         .from('issues')
-        .select('id, project_id, unit_id, unit_stage_id, title, description, priority, assigned_to, status, created_at, updated_at')
+        .select('id, project_id, unit_id, unit_stage_id, title, description, priority, assigned_to, status, started_at, due_date, created_at, updated_at')
         .eq('project_id', projectId)
         .order('updated_at', { ascending: false }),
 
@@ -824,7 +834,8 @@ export default function ObraRelatoriosPage() {
           stage_name: safeStr(us.custom_name).trim() || safeStr(stage?.name).trim() || 'Etapa',
           status: us.status,
           notes: safeStr(us.notes).trim(),
-          started_at: timeline.started_at || null,
+          started_at: us.started_at || timeline.started_at || null,
+          due_date: us.due_date || null,
           finished_at: timeline.finished_at || null,
           events: [],
           photos: [],
@@ -925,17 +936,19 @@ export default function ObraRelatoriosPage() {
 
     return {
       moved_units: unitIds.size,
-      total_logs: diaryLogs.length,
       total_photos: diaryPhotos.length,
       started,
       finished,
       observations,
     }
-  }, [diaryBlocks, diaryLogs.length, diaryPhotos.length])
+  }, [diaryBlocks, diaryPhotos.length])
 
   const periodSummary = useMemo(() => {
     const unitIds = new Set()
     const stageCounters = {}
+    let started = 0
+    let finished = 0
+    let observations = 0
 
     periodLogs.forEach((log) => {
       const us = unitStagesById[log.unit_stage_id]
@@ -958,17 +971,28 @@ export default function ObraRelatoriosPage() {
       if (log.action === 'status_changed') {
         const fromStatus = oldStatusFromLog(log)
         const toStatus = newStatusFromLog(log)
-        if (fromStatus === 'pending' && toStatus === 'in_progress') stageCounters[key].started += 1
-        if (toStatus === 'done') stageCounters[key].finished += 1
+        if (fromStatus === 'pending' && toStatus === 'in_progress') {
+          stageCounters[key].started += 1
+          started += 1
+        }
+        if (toStatus === 'done') {
+          stageCounters[key].finished += 1
+          finished += 1
+        }
       }
 
-      if (log.action === 'notes_updated') stageCounters[key].observations += 1
+      if (log.action === 'notes_updated') {
+        stageCounters[key].observations += 1
+        observations += 1
+      }
     })
 
     return {
       moved_units: unitIds.size,
-      total_logs: periodLogs.length,
       total_photos: periodPhotos.length,
+      started,
+      finished,
+      observations,
       stages: Object.values(stageCounters).sort((a, b) => safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR')),
     }
   }, [periodLogs, periodPhotos, unitStagesById, stagesById])
@@ -994,6 +1018,32 @@ export default function ObraRelatoriosPage() {
     counts.avg_progress = units.length > 0 ? progressSum / units.length : 0
     return counts
   }, [units])
+
+  const unitProgressById = useMemo(() => {
+    const grouped = {}
+
+    unitStages.forEach((row) => {
+      const unitId = row?.unit_id
+      if (!unitId) return
+      if (!grouped[unitId]) grouped[unitId] = []
+      grouped[unitId].push(row)
+    })
+
+    const metrics = {}
+    Object.entries(grouped).forEach(([unitId, rows]) => {
+      const activeRows = rows.filter((row) => row?.is_active !== false)
+      const totalStages = activeRows.length
+      const doneStages = activeRows.filter((row) => normalizeStatus(row?.status) === 'done').length
+      const progressPct = totalStages > 0 ? (doneStages / totalStages) * 100 : Number(unitsById[unitId]?.progress || 0)
+      metrics[unitId] = {
+        totalStages,
+        doneStages,
+        progressPct,
+      }
+    })
+
+    return metrics
+  }, [unitStages, unitsById])
 
   const enrichedUnitStages = useMemo(() => {
     return unitStages.map((row) => {
@@ -1114,6 +1164,27 @@ export default function ObraRelatoriosPage() {
     return counts
   }, [entryTypeFilter, filteredObservationRows, filteredIssueRows])
 
+  useEffect(() => {
+    async function hydrateReportPhotos() {
+      const activeBlocks = mode === REPORT_MODE.diary ? diaryBlocks : mode === REPORT_MODE.period ? periodBlocks : []
+      const photosToLoad = activeBlocks.flatMap((block) => block.photos || []).filter((photo) => photo?.id && photo?.path && !reportPhotoUrls[photo.id])
+
+      if (photosToLoad.length === 0) return
+
+      const updates = {}
+      for (const photo of photosToLoad) {
+        const { data, error } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(photo.path, 60 * 60)
+        if (!error && data?.signedUrl) updates[photo.id] = data.signedUrl
+      }
+
+      if (Object.keys(updates).length > 0) {
+        setReportPhotoUrls((prev) => ({ ...prev, ...updates }))
+      }
+    }
+
+    hydrateReportPhotos()
+  }, [mode, diaryBlocks, periodBlocks, reportPhotoUrls])
+
   async function generateDiaryPdf() {
     if (!project) return
 
@@ -1150,7 +1221,6 @@ export default function ObraRelatoriosPage() {
     drawSummaryCard('Etapas concluídas', diarySummary.finished)
     drawSummaryCard('Fotos registradas', diarySummary.total_photos)
     drawSummaryCard('Observações registradas', diarySummary.observations)
-    drawSummaryCard('Registros do histórico', diarySummary.total_logs)
     finishSummaryCards()
     setY(getY() + 4)
 
@@ -1171,19 +1241,11 @@ export default function ObraRelatoriosPage() {
 
         drawLabelValue('Etapa', block.stage_name)
         drawLabelValue('Status atual', statusLabel(block.status))
+        drawLabelValue('Progresso da unidade', `${Number(unitProgressById[block.unit?.id]?.progressPct || block.unit?.progress || 0).toFixed(1)}%`)
         if (block.started_at) drawLabelValue('Início', formatDateTime(block.started_at))
+        if (block.due_date) drawLabelValue('Previsão', formatDateOnly(block.due_date))
         if (block.finished_at) drawLabelValue('Conclusão', formatDateTime(block.finished_at))
         if (block.started_at && block.finished_at) drawLabelValue('Duração', durationLabel(block.started_at, block.finished_at))
-
-        if (block.events.length > 0) {
-          drawSectionTitle('Atividades registradas no dia')
-          block.events.forEach((event) => {
-            writeParagraph(
-              `• ${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`,
-              { fontSize: 9, lineHeight: 11, bottomGap: 1 }
-            )
-          })
-        }
 
         if (safeStr(block.notes).trim()) {
           drawSectionTitle('Observação da etapa')
@@ -1247,8 +1309,10 @@ export default function ObraRelatoriosPage() {
     drawSectionTitle('Resumo do período')
     resetSummaryCards()
     drawSummaryCard('Unidades com movimentação', periodSummary.moved_units)
-    drawSummaryCard('Registros no período', periodSummary.total_logs)
     drawSummaryCard('Fotos no período', periodSummary.total_photos)
+    drawSummaryCard('Etapas iniciadas', periodSummary.started)
+    drawSummaryCard('Etapas concluídas', periodSummary.finished)
+    drawSummaryCard('Observações registradas', periodSummary.observations)
     drawSummaryCard('Total de unidades', units.length)
     finishSummaryCards()
     setY(getY() + 4)
@@ -1274,25 +1338,24 @@ export default function ObraRelatoriosPage() {
 
         drawLabelValue('Etapa', block.stage_name)
         drawLabelValue('Status atual', statusLabel(block.status))
+        drawLabelValue('Progresso da unidade', `${Number(unitProgressById[block.unit?.id]?.progressPct || block.unit?.progress || 0).toFixed(1)}%`)
         if (block.started_at) drawLabelValue('Início', formatDateTime(block.started_at))
+        if (block.due_date) drawLabelValue('Previsão', formatDateOnly(block.due_date))
         if (block.finished_at) drawLabelValue('Conclusão', formatDateTime(block.finished_at))
         if (block.started_at && block.finished_at) {
           drawLabelValue('Duração', durationLabel(block.started_at, block.finished_at))
         }
 
-        if (block.events.length > 0) {
-          drawSectionTitle('Atividades registradas no período')
-          block.events.forEach((event) => {
-            writeParagraph(
-              `• ${formatDate(event.created_at)} ${formatTime(event.created_at)} - ${event.text}${event.user_name ? ` (${event.user_name})` : ''}`,
-              { fontSize: 9, lineHeight: 11, bottomGap: 1 }
-            )
-          })
-        }
-
         if (safeStr(block.notes).trim()) {
           drawSectionTitle('Observação da etapa')
           writeParagraph(block.notes, { fontSize: 9, lineHeight: 11, bottomGap: 2 })
+        }
+
+        if (block.photos.length > 0) {
+          drawSectionTitle('Fotos registradas no período')
+          for (const photo of block.photos) {
+            await drawPhotoBlock(photo)
+          }
         }
 
         drawDivider()
@@ -1393,6 +1456,8 @@ export default function ObraRelatoriosPage() {
 
         drawLabelValue('Etapa', row.stage_display_name)
         drawLabelValue('Status', statusLabel(row.status))
+        drawLabelValue('Início', formatDateTime(row.started_at) || '-')
+        drawLabelValue('Previsão', formatDateOnly(row.due_date) || '-')
 
         const relatedLogs = logs
           .filter((log) => log.unit_stage_id === row.id)
@@ -1425,6 +1490,8 @@ export default function ObraRelatoriosPage() {
 
         drawLabelValue('Etapa', row.stage_display_name)
         drawLabelValue('Status', issueStatusLabel(row.status))
+        drawLabelValue('Início', formatDateTime(row.started_at) || '-')
+        drawLabelValue('Previsão', formatDateOnly(row.due_date) || '-')
         drawLabelValue('Título', safeStr(row.title).trim() || 'Sem título')
         drawLabelValue('Última atualização', formatDateTime(row.updated_at || row.created_at) || '-')
 
@@ -1477,6 +1544,114 @@ export default function ObraRelatoriosPage() {
   }
 
   const issueFilterEnabled = entryTypeFilter !== 'observations'
+
+  function renderProgressBar(label, value) {
+    return (
+      <div style={{ display: 'grid', gap: 6 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, color: '#444' }}>
+          <span>{label}</span>
+          <b>{Number(value || 0).toFixed(1)}%</b>
+        </div>
+        <div style={{ height: 10, borderRadius: 999, background: '#ededed', overflow: 'hidden' }}>
+          <div style={{ width: `${clampPercent(value)}%`, height: '100%', background: '#111' }} />
+        </div>
+      </div>
+    )
+  }
+
+  function renderLiveBlocks(blocks, emptyMessage, photoTitle) {
+    if (blocks.length === 0) {
+      return (
+        <div style={{ ...cardStyle, color: '#666' }}>
+          {emptyMessage}
+        </div>
+      )
+    }
+
+    return (
+      <div style={{ display: 'grid', gap: 14 }}>
+        {blocks.map((block) => {
+          const progressPct = Number(unitProgressById[block.unit?.id]?.progressPct || block.unit?.progress || 0)
+
+          return (
+            <div key={block.unit_stage_id} style={cardStyle}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Unidade</div>
+                  <div style={{ fontSize: 18, fontWeight: 900 }}>
+                    {safeStr(block.unit?.identifier) || '-'} • {block.stage_name}
+                  </div>
+                </div>
+                <span style={buildPillStyle(getStatusTone(block.status))}>{statusLabel(block.status)}</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginTop: 14 }}>
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fafafa' }}>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Progresso da unidade</div>
+                  <div style={{ fontSize: 18, fontWeight: 900 }}>{progressPct.toFixed(1)}%</div>
+                </div>
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fafafa' }}>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Início</div>
+                  <div style={{ fontSize: 14, fontWeight: 800 }}>{formatDateTime(block.started_at) || '—'}</div>
+                </div>
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fafafa' }}>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Previsão</div>
+                  <div style={{ fontSize: 14, fontWeight: 800 }}>{formatDateOnly(block.due_date) || '—'}</div>
+                </div>
+                <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fafafa' }}>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Conclusão</div>
+                  <div style={{ fontSize: 14, fontWeight: 800 }}>{formatDateTime(block.finished_at) || '—'}</div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                {renderProgressBar('Progresso atual da obra nesta unidade', progressPct)}
+              </div>
+
+              <div style={{ marginTop: 14, display: 'grid', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Observação da etapa</div>
+                  <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fafafa', lineHeight: 1.6, color: '#374151' }}>
+                    {safeStr(block.notes).trim() || 'Sem observação registrada.'}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>{photoTitle}</div>
+                  {block.photos.length === 0 ? (
+                    <div style={{ color: '#666' }}>Nenhuma foto no recorte selecionado.</div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      {block.photos.map((photo) => {
+                        const url = reportPhotoUrls[photo.id]
+                        return (
+                          <div key={photo.id} style={{ width: 130 }}>
+                            <div style={{ width: 130, height: 130, borderRadius: 12, overflow: 'hidden', border: '1px solid #eee', background: '#f3f4f6' }}>
+                              {url ? (
+                                <img src={url} alt={photo.caption || 'foto'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                              ) : (
+                                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 12, textAlign: 'center', padding: 8 }}>
+                                  Carregando foto...
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ marginTop: 6, fontSize: 12, color: '#666', lineHeight: 1.4 }}>
+                              <div>{safeStr(photo.caption).trim() || getPhotoKindLabel(photo.kind)}</div>
+                              <div>{formatDateTime(photo.created_at) || '—'}</div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
 
   if (loading) {
     return (
@@ -1616,8 +1791,8 @@ export default function ObraRelatoriosPage() {
               <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.moved_units}</div>
             </div>
             <div style={cardStyle}>
-              <div style={{ fontSize: 12, color: '#666' }}>Registros do dia</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.total_logs}</div>
+              <div style={{ fontSize: 12, color: '#666' }}>Progresso médio da obra</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{projectSummary.avg_progress.toFixed(1)}%</div>
             </div>
             <div style={cardStyle}>
               <div style={{ fontSize: 12, color: '#666' }}>Fotos do dia</div>
@@ -1636,6 +1811,19 @@ export default function ObraRelatoriosPage() {
               <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{diarySummary.observations}</div>
             </div>
           </div>
+
+          <div style={{ ...cardStyle, marginBottom: 18, display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 16, fontWeight: 900 }}>Resumo atualizado da obra</div>
+            {renderProgressBar('Progresso geral da obra', projectSummary.avg_progress)}
+            {renderProgressBar('Unidades concluídas', (projectSummary.done / Math.max(1, projectSummary.total_units)) * 100)}
+            {renderProgressBar('Unidades em andamento', (projectSummary.in_progress / Math.max(1, projectSummary.total_units)) * 100)}
+            {renderProgressBar('Unidades pendentes', (projectSummary.pending / Math.max(1, projectSummary.total_units)) * 100)}
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 12 }}>Visualização do diário</div>
+            {renderLiveBlocks(diaryBlocks, 'Nenhuma movimentação encontrada para a data selecionada.', 'Fotos registradas na data')}
+          </div>
         </>
       )}
 
@@ -1651,6 +1839,64 @@ export default function ObraRelatoriosPage() {
               <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Data final</div>
               <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
             </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 18 }}>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Unidades com movimentação</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.moved_units}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Fotos do período</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.total_photos}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Etapas iniciadas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.started}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Etapas concluídas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.finished}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Observações registradas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{periodSummary.observations}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ fontSize: 12, color: '#666' }}>Progresso médio da obra</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{projectSummary.avg_progress.toFixed(1)}%</div>
+            </div>
+          </div>
+
+          <div style={{ ...cardStyle, marginTop: 18, display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 16, fontWeight: 900 }}>Resumo atualizado da obra</div>
+            {renderProgressBar('Progresso geral da obra', projectSummary.avg_progress)}
+            {renderProgressBar('Unidades concluídas', (projectSummary.done / Math.max(1, projectSummary.total_units)) * 100)}
+            {renderProgressBar('Unidades em andamento', (projectSummary.in_progress / Math.max(1, projectSummary.total_units)) * 100)}
+            {renderProgressBar('Unidades pendentes', (projectSummary.pending / Math.max(1, projectSummary.total_units)) * 100)}
+          </div>
+
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 12 }}>Visualização do período</div>
+            {renderLiveBlocks(periodBlocks, 'Nenhuma movimentação encontrada no período selecionado.', 'Fotos registradas no período')}
+          </div>
+
+          <div style={{ ...cardStyle, marginTop: 18 }}>
+            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 12 }}>Consolidado por etapa</div>
+            {periodSummary.stages.length === 0 ? (
+              <div style={{ color: '#666' }}>Nenhum consolidado disponível para o período.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 10 }}>
+                {periodSummary.stages.map((row) => (
+                  <div key={row.stage_name} style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, background: '#fafafa' }}>
+                    <div style={{ fontSize: 14, fontWeight: 900 }}>{row.stage_name}</div>
+                    <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>
+                      Iniciadas: <b>{row.started}</b> | Concluídas: <b>{row.finished}</b> | Observações: <b>{row.observations}</b>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1880,6 +2126,9 @@ export default function ObraRelatoriosPage() {
                     <div style={{ marginTop: 10, fontSize: 14, lineHeight: 1.6, color: '#374151' }}>
                       {safeStr(row.notes).trim() || 'Sem observação'}
                     </div>
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+                      Início: <b>{formatDateTime(row.started_at) || '-'}</b> • Previsão: <b>{formatDateOnly(row.due_date) || '-'}</b>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1901,6 +2150,9 @@ export default function ObraRelatoriosPage() {
                     <div style={{ marginTop: 10, fontSize: 15, fontWeight: 800 }}>{safeStr(row.title).trim() || 'Sem título'}</div>
                     <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.6, color: '#374151' }}>
                       {safeStr(row.description).trim() || 'Sem descrição.'}
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
+                      Início: <b>{formatDateTime(row.started_at) || '-'}</b> • Previsão: <b>{formatDateOnly(row.due_date) || '-'}</b>
                     </div>
                     <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
                       Atualizada em: <b>{formatDateTime(row.updated_at || row.created_at) || '-'}</b>
