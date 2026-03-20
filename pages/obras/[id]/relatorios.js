@@ -22,6 +22,16 @@ const ISSUE_STATUS_LABEL = {
   resolved: 'Resolvida',
 }
 
+const ISSUE_REPORT_STATUS = {
+  open: 'open',
+  resolved: 'resolved',
+}
+
+const ISSUE_REPORT_STATUS_LABEL = {
+  [ISSUE_REPORT_STATUS.open]: 'Abertas',
+  [ISSUE_REPORT_STATUS.resolved]: 'Concluídas',
+}
+
 const STATUS_TONE = {
   pending: {
     background: '#FEE2E2',
@@ -79,6 +89,24 @@ function issueStatusToStageStatus(status) {
   if (normalized === 'resolved') return 'done'
   if (normalized === 'in_progress') return 'in_progress'
   return 'pending'
+}
+
+function issueReportStatus(status) {
+  return normalizeIssueStatus(status) === 'resolved' ? ISSUE_REPORT_STATUS.resolved : ISSUE_REPORT_STATUS.open
+}
+
+function issueMatchesReportStatus(status, selectedStatuses) {
+  const reportStatus = issueReportStatus(status)
+  return selectedStatuses.includes(reportStatus)
+}
+
+function issueReportStatusLabel(status) {
+  return ISSUE_REPORT_STATUS_LABEL[status] || safeStr(status) || '-'
+}
+
+function formatIssueReportFilter(selectedStatuses) {
+  if (!Array.isArray(selectedStatuses) || selectedStatuses.length === 0) return 'Nenhuma'
+  return selectedStatuses.map((status) => issueReportStatusLabel(status)).join(', ')
 }
 
 function statusLabel(status) {
@@ -601,6 +629,7 @@ export default function ObraRelatoriosPage() {
 
   const [statusFilter, setStatusFilter] = useState('')
   const [entryTypeFilter, setEntryTypeFilter] = useState('all')
+  const [issueReportFilter, setIssueReportFilter] = useState([ISSUE_REPORT_STATUS.open])
   const [unitFilter, setUnitFilter] = useState([])
   const [stageFilter, setStageFilter] = useState([])
   const [textFilter, setTextFilter] = useState('')
@@ -1031,7 +1060,7 @@ export default function ObraRelatoriosPage() {
 
     return enrichedIssues
       .filter((row) => {
-        if (statusFilter && normalizeStatus(row.normalized_status) !== normalizeStatus(statusFilter)) return false
+        if (!issueMatchesReportStatus(row.status, issueReportFilter)) return false
         if (unitFilterSet.size > 0 && !unitFilterSet.has(row.unit_id)) return false
         if (stageFilterSet.size > 0 && !stageFilterSet.has(row.stage_id)) return false
 
@@ -1055,37 +1084,30 @@ export default function ObraRelatoriosPage() {
         if (unitCmp !== 0) return unitCmp
         return new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
       })
-  }, [enrichedIssues, statusFilter, unitFilter, stageFilter, textFilter])
+  }, [enrichedIssues, issueReportFilter, unitFilter, stageFilter, textFilter])
 
   const reportSummary = useMemo(() => {
     const counts = {
       total: 0,
-      observations: filteredObservationRows.length,
-      issues: filteredIssueRows.length,
-      pending: 0,
-      in_progress: 0,
-      done: 0,
+      observations: entryTypeFilter === 'issues' ? 0 : filteredObservationRows.length,
+      issues: entryTypeFilter === 'observations' ? 0 : filteredIssueRows.length,
+      open_issues: 0,
+      resolved_issues: 0,
       with_notes: 0,
     }
 
     if (entryTypeFilter !== 'issues') {
       filteredObservationRows.forEach((row) => {
-        const s = normalizeStatus(row.status)
         counts.total += 1
-        if (s === 'pending') counts.pending += 1
-        if (s === 'in_progress') counts.in_progress += 1
-        if (s === 'done') counts.done += 1
         if (safeStr(row.notes).trim()) counts.with_notes += 1
       })
     }
 
     if (entryTypeFilter !== 'observations') {
       filteredIssueRows.forEach((row) => {
-        const s = normalizeStatus(row.normalized_status)
         counts.total += 1
-        if (s === 'pending') counts.pending += 1
-        if (s === 'in_progress') counts.in_progress += 1
-        if (s === 'done') counts.done += 1
+        if (issueReportStatus(row.status) === ISSUE_REPORT_STATUS.open) counts.open_issues += 1
+        if (issueReportStatus(row.status) === ISSUE_REPORT_STATUS.resolved) counts.resolved_issues += 1
       })
     }
 
@@ -1319,7 +1341,7 @@ export default function ObraRelatoriosPage() {
     drawLabelValue('Obra', project.name || '-')
     drawLabelValue('Cliente', project.client_name || '-')
     drawLabelValue('Cidade', project.city || '-')
-    drawLabelValue('Status filtrado', statusFilter ? statusLabel(statusFilter) : 'Todos')
+    drawLabelValue('Status da etapa', entryTypeFilter === 'issues' ? 'Não se aplica' : statusFilter ? statusLabel(statusFilter) : 'Todos')
     drawLabelValue(
       'Etapas filtradas',
       stageFilter.length > 0
@@ -1330,8 +1352,9 @@ export default function ObraRelatoriosPage() {
       'Tipo exibido',
       entryTypeFilter === 'observations' ? 'Observações' : entryTypeFilter === 'issues' ? 'Pendências' : 'Todos'
     )
+    drawLabelValue('Pendências consideradas', entryTypeFilter === 'observations' ? 'Não se aplica' : formatIssueReportFilter(issueReportFilter))
     drawLabelValue('Texto pesquisado', textFilter || '-')
-    drawLabelValue('Somente com observação', onlyWithObservation ? 'Sim' : 'Não')
+    drawLabelValue('Somente com observação', entryTypeFilter === 'issues' ? 'Não se aplica' : onlyWithObservation ? 'Sim' : 'Não')
 
     setY(getY() + 3)
 
@@ -1340,9 +1363,8 @@ export default function ObraRelatoriosPage() {
     drawSummaryCard('Total filtrado', reportSummary.total)
     drawSummaryCard('Observações', reportSummary.observations)
     drawSummaryCard('Pendências', reportSummary.issues)
-    drawSummaryCard('Pendentes', reportSummary.pending)
-    drawSummaryCard('Em andamento', reportSummary.in_progress)
-    drawSummaryCard('Concluídas', reportSummary.done)
+    drawSummaryCard('Pendências abertas', reportSummary.open_issues)
+    drawSummaryCard('Pendências concluídas', reportSummary.resolved_issues)
     finishSummaryCards()
     setY(getY() + 4)
 
@@ -1358,7 +1380,7 @@ export default function ObraRelatoriosPage() {
         lineHeight: 10.5,
         bottomGap: 2,
       })
-    } else {
+    } else if (entryTypeFilter !== 'issues') {
       filteredObservationRows.forEach((row) => {
         addPageIfNeeded(34)
 
@@ -1453,6 +1475,8 @@ export default function ObraRelatoriosPage() {
     if (currentValues.includes(value)) setter(currentValues.filter((v) => v !== value))
     else setter([...currentValues, value])
   }
+
+  const issueFilterEnabled = entryTypeFilter !== 'observations'
 
   if (loading) {
     return (
@@ -1669,15 +1693,22 @@ export default function ObraRelatoriosPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status</div>
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
-                <option value="">Todos</option>
-                <option value="pending">Pendente</option>
-                <option value="in_progress">Em andamento</option>
-                <option value="done">Concluída</option>
-              </select>
-            </div>
+            {entryTypeFilter !== 'issues' ? (
+              <div>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status da etapa (observações)</div>
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={inputStyle}>
+                  <option value="">Todos</option>
+                  <option value="pending">Pendente</option>
+                  <option value="in_progress">Em andamento</option>
+                  <option value="done">Concluída</option>
+                </select>
+              </div>
+            ) : (
+              <div style={{ ...cardStyle, padding: 12, boxShadow: 'none', background: '#fafafa' }}>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Status da etapa</div>
+                <div style={{ fontSize: 14, color: '#6b7280' }}>Não se aplica ao relatório de pendências.</div>
+              </div>
+            )}
 
             <div>
               <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Texto</div>
@@ -1685,22 +1716,52 @@ export default function ObraRelatoriosPage() {
                 type="text"
                 value={textFilter}
                 onChange={(e) => setTextFilter(e.target.value)}
-                placeholder="Buscar por unidade, etapa, observação..."
+                placeholder="Buscar por unidade, etapa, observação ou pendência..."
                 style={inputStyle}
               />
             </div>
           </div>
 
           <div style={{ marginBottom: 12 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-              <input
-                type="checkbox"
-                checked={onlyWithObservation}
-                onChange={(e) => setOnlyWithObservation(e.target.checked)}
-              />
-              Mostrar somente etapas com observação
-            </label>
+            {issueFilterEnabled ? (
+              <div style={{ ...cardStyle, padding: 12, boxShadow: 'none', background: '#fafafa' }}>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>Pendências consideradas</div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {Object.values(ISSUE_REPORT_STATUS).map((issueStatus) => (
+                    <label key={issueStatus} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={issueReportFilter.includes(issueStatus)}
+                        onChange={() => toggleMultiValue(setIssueReportFilter, issueReportFilter, issueStatus)}
+                      />
+                      {issueReportStatusLabel(issueStatus)}
+                    </label>
+                  ))}
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+                  Abertas = open + in_progress | Concluídas = resolved
+                </div>
+              </div>
+            ) : (
+              <div style={{ ...cardStyle, padding: 12, boxShadow: 'none', background: '#fafafa' }}>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Pendências consideradas</div>
+                <div style={{ fontSize: 14, color: '#6b7280' }}>Filtro disponível apenas quando o relatório inclui pendências.</div>
+              </div>
+            )}
           </div>
+
+          {entryTypeFilter !== 'issues' ? (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+                <input
+                  type="checkbox"
+                  checked={onlyWithObservation}
+                  onChange={(e) => setOnlyWithObservation(e.target.checked)}
+                />
+                Mostrar somente etapas com observação
+              </label>
+            </div>
+          ) : null}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div>
@@ -1790,17 +1851,13 @@ export default function ObraRelatoriosPage() {
               <div style={{ fontSize: 12, color: '#666' }}>Pendências</div>
               <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.issues}</div>
             </div>
-            <div style={{ ...cardStyle, background: getStatusTone('pending').background, color: getStatusTone('pending').color }}>
-              <div style={{ fontSize: 12, opacity: 0.85 }}>Pendentes</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.pending}</div>
-            </div>
             <div style={{ ...cardStyle, background: getStatusTone('in_progress').background, color: getStatusTone('in_progress').color }}>
-              <div style={{ fontSize: 12, opacity: 0.85 }}>Em andamento</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.in_progress}</div>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>Pendências abertas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.open_issues}</div>
             </div>
             <div style={{ ...cardStyle, background: getStatusTone('done').background, color: getStatusTone('done').color }}>
-              <div style={{ fontSize: 12, opacity: 0.85 }}>Concluídos</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.done}</div>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>Pendências concluídas</div>
+              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 8 }}>{reportSummary.resolved_issues}</div>
             </div>
           </div>
 
