@@ -1033,6 +1033,7 @@ export default function ObraRelatoriosPage() {
       resetSummaryCards,
       drawSummaryCard,
       finishSummaryCards,
+      drawPhotoBlock,
       writeParagraph,
       addPageIfNeeded,
       margin,
