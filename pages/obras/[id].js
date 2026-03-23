@@ -1358,7 +1358,7 @@ export default function ObraDetalhePage() {
   const pct = Math.round(stats.avg)
 
   return (
-    <div style={{ padding: 24, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+    <div style={{ padding: 'clamp(12px, 4vw, 24px)', fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Obra</div>
@@ -1637,7 +1637,7 @@ export default function ObraDetalhePage() {
         </div>
       </div>
 
-      <div style={{ marginTop: 14, maxWidth: 1100, display: 'grid', gap: 10 }}>
+      <div style={{ marginTop: 14, maxWidth: 1100, display: 'grid', gap: 10, width: '100%' }}>
         {filteredUnits.length === 0 ? (
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
         ) : (
@@ -1657,10 +1657,13 @@ export default function ObraDetalhePage() {
                   display: 'grid',
                   gap: 12,
                   opacity: u.is_active === false ? 0.7 : 1,
+                  width: '100%',
+                  minWidth: 0,
+                  boxSizing: 'border-box',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', minWidth: 0 }}>
                     <div style={{ fontSize: 20, fontWeight: 900 }}>
                       Unidade {u.identifier || u.id}
                     </div>
@@ -1687,7 +1690,7 @@ export default function ObraDetalhePage() {
                     ) : null}
                   </div>
 
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
                     <Link href={`/unidades/${u.id}`} style={{ textDecoration: 'none' }}>
                       <button
                         type="button"
@@ -1825,8 +1828,8 @@ export default function ObraDetalhePage() {
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', fontSize: 13, color: '#444' }}>
+                <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', fontSize: 13, color: '#444', minWidth: 0 }}>
                     <span>
                       Etapas: <b>{metrics.doneStages}/{metrics.totalStages}</b>
                     </span>
@@ -1836,18 +1839,18 @@ export default function ObraDetalhePage() {
                     </span>
                   </div>
 
-                  <div style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ display: 'grid', gap: 6, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
                       <span>Progresso</span>
                       <b>{formatPct(metrics.progressPct)}</b>
                     </div>
 
-                    <div style={{ height: 10, background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
+                    <div style={{ height: 10, width: '100%', background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
                       <div style={{ width: `${pctUnit}%`, height: '100%', background: '#111', opacity: 0.18 }} />
                     </div>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(100px, 1fr))', gap: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(88px, 1fr))', gap: 10, minWidth: 0 }}>
                     <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>pendentes</div>
                       <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.pendingStages}</div>
