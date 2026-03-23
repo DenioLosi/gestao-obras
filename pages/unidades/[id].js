@@ -536,6 +536,7 @@ export default function UnidadePage() {
   const [busyStageId, setBusyStageId] = useState(null)
   const [uploadingStageId, setUploadingStageId] = useState(null)
   const [deletingPhotoId, setDeletingPhotoId] = useState(null)
+  const [expandedStageIds, setExpandedStageIds] = useState({})
 
   const [openStatusMenuStageId, setOpenStatusMenuStageId] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
@@ -564,6 +565,13 @@ export default function UnidadePage() {
   const [copyStructure, setCopyStructure] = useState(true)
   const [copyNotes, setCopyNotes] = useState(false)
   const [copyPhotos, setCopyPhotos] = useState(false)
+
+  function toggleStageExpanded(stageId) {
+    setExpandedStageIds((prev) => ({
+      ...prev,
+      [stageId]: !prev[stageId],
+    }))
+  }
 
   useEffect(() => {
     if (!openActionMenuStageId) return
@@ -1904,6 +1912,7 @@ export default function UnidadePage() {
         {visibleStages.map((s) => {
           const isBusy = busyStageId === s.id
           const isUploading = uploadingStageId === s.id
+          const isExpanded = !!expandedStageIds[s.id]
           const stageLogs = stageLogsByStageId[s.id] || []
           const sortedPhotos = [...(s.photos || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
           const stageOpenIssueCount = openIssueCountByStageId[s.id] || 0
@@ -1983,6 +1992,24 @@ export default function UnidadePage() {
                     }}
                   >
                     Pendências{stageOpenIssueCount > 0 ? ` (${stageOpenIssueCount})` : ''}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => toggleStageExpanded(s.id)}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: 10,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      cursor: 'pointer',
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                    }}
+                    aria-expanded={isExpanded}
+                    title={isExpanded ? 'Recolher etapa' : 'Expandir etapa'}
+                  >
+                    {isExpanded ? 'Recolher ▲' : 'Expandir ▼'}
                   </button>
 
                   <div
@@ -2158,6 +2185,8 @@ export default function UnidadePage() {
                 </div>
               ) : null}
 
+              {isExpanded ? (
+                <>
               <div
                 style={{
                   marginTop: 12,
@@ -2429,6 +2458,8 @@ export default function UnidadePage() {
                   </div>
                 ) : null}
               </div>
+                </>
+              ) : null}
             </div>
           )
         })}
