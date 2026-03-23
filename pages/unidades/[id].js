@@ -25,6 +25,7 @@ const EMPTY_ISSUE_FORM = {
   priority: 'medium',
   assigned_to: '',
   status: 'open',
+  due_date: '',
 }
 
 const STATUS_PT = {
@@ -591,6 +592,7 @@ export default function UnidadePage() {
       priority: safeStr(issue?.priority) || 'medium',
       assigned_to: safeStr(issue?.assigned_to),
       status: safeStr(issue?.status) || 'open',
+      due_date: safeStr(issue?.due_date).slice(0, 10),
     })
     setIssueModalOpen(true)
   }
@@ -930,6 +932,7 @@ export default function UnidadePage() {
         priority: safeStr(issueForm.priority) || 'medium',
         assigned_to: safeStr(issueForm.assigned_to),
         status: safeStr(issueForm.status) || 'open',
+        due_date: safeStr(issueForm.due_date).trim(),
       }
 
       const result = editingIssueId
@@ -2462,6 +2465,22 @@ export default function UnidadePage() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>PrevisÃ£o</div>
+              <input
+                type="date"
+                value={issueForm.due_date}
+                onChange={(e) => setIssueForm((prev) => ({ ...prev, due_date: e.target.value }))}
+                disabled={issueModalBusy}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                }}
+              />
             </div>
           </div>
 
