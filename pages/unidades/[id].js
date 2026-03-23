@@ -83,8 +83,8 @@ function issueDeadlineMeta(issue) {
   if (!dueValue || status === 'resolved') {
     return {
       label: 'Sem data ou com folga',
-      color: '#D4A017',
-      background: '#FEF3C7',
+      color: '#EAB308',
+      background: '#FEF9C3',
     }
   }
 
@@ -92,8 +92,8 @@ function issueDeadlineMeta(issue) {
   if (Number.isNaN(due.getTime())) {
     return {
       label: 'Sem data ou com folga',
-      color: '#D4A017',
-      background: '#FEF3C7',
+      color: '#EAB308',
+      background: '#FEF9C3',
     }
   }
 
@@ -104,23 +104,23 @@ function issueDeadlineMeta(issue) {
   if (diffDays < 0) {
     return {
       label: 'Vencida',
-      color: '#D96C6C',
-      background: '#FDE2E2',
+      color: '#DC2626',
+      background: '#FEE2E2',
     }
   }
 
   if (diffDays <= 2) {
     return {
       label: 'Perto de vencer',
-      color: '#D9822B',
-      background: '#FDE7C7',
+      color: '#F97316',
+      background: '#FFEDD5',
     }
   }
 
   return {
     label: 'Sem data ou com folga',
-    color: '#D4A017',
-    background: '#FEF3C7',
+    color: '#EAB308',
+    background: '#FEF9C3',
   }
 }
 
@@ -2500,7 +2500,7 @@ export default function UnidadePage() {
                 fontWeight: 900,
               }}
             >
-              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar issue'}
+              {issueModalBusy ? 'Salvandoâ€¦' : 'Salvar pendência'}
             </button>
           </div>
         </div>

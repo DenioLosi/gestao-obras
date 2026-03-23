@@ -188,9 +188,9 @@ function issueDeadlineMeta(issue) {
   if (!dueValue || status === 'resolved') {
     return {
       label: 'Sem data ou com folga',
-      color: '#D4A017',
-      background: '#FEF3C7',
-      rgb: [212, 160, 23],
+      color: '#EAB308',
+      background: '#FEF9C3',
+      rgb: [234, 179, 8],
     }
   }
 
@@ -198,9 +198,9 @@ function issueDeadlineMeta(issue) {
   if (Number.isNaN(due.getTime())) {
     return {
       label: 'Sem data ou com folga',
-      color: '#D4A017',
-      background: '#FEF3C7',
-      rgb: [212, 160, 23],
+      color: '#EAB308',
+      background: '#FEF9C3',
+      rgb: [234, 179, 8],
     }
   }
 
@@ -211,26 +211,26 @@ function issueDeadlineMeta(issue) {
   if (diffDays < 0) {
     return {
       label: 'Vencida',
-      color: '#D96C6C',
-      background: '#FDE2E2',
-      rgb: [217, 108, 108],
+      color: '#DC2626',
+      background: '#FEE2E2',
+      rgb: [220, 38, 38],
     }
   }
 
   if (diffDays <= 2) {
     return {
       label: 'Perto de vencer',
-      color: '#D9822B',
-      background: '#FDE7C7',
-      rgb: [217, 130, 43],
+      color: '#F97316',
+      background: '#FFEDD5',
+      rgb: [249, 115, 22],
     }
   }
 
   return {
     label: 'Sem data ou com folga',
-    color: '#D4A017',
-    background: '#FEF3C7',
-    rgb: [212, 160, 23],
+    color: '#EAB308',
+    background: '#FEF9C3',
+    rgb: [234, 179, 8],
   }
 }
 
@@ -1487,6 +1487,7 @@ export default function ObraRelatoriosPage() {
       pdf,
       drawSectionTitle,
       drawLabelValue,
+      drawLabelValueWithIndicator,
       drawDivider,
       resetSummaryCards,
       drawSummaryCard,
