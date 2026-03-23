@@ -15,7 +15,7 @@ export default function AlterarSenha() {
 
     setLoading(true)
 
-    const { error } = await supabase.auth.updateUser({
+    const { data: authData, error } = await supabase.auth.updateUser({
       password: senha
     })
 
@@ -25,17 +25,31 @@ export default function AlterarSenha() {
       return
     }
 
-    const { data } = await supabase.auth.getUser()
+    const userId = authData?.user?.id
 
-    await supabase
+    if (!userId) {
+      alert("Não foi possível identificar o usuário autenticado.")
+      setLoading(false)
+      return
+    }
+
+    const { error: profileError } = await supabase
       .from("profiles")
       .update({ must_change_password: false })
-      .eq("id", data.user.id)
+      .eq("id", userId)
+
+    if (profileError) {
+      alert(profileError.message)
+      setLoading(false)
+      return
+    }
+
+    await supabase.auth.refreshSession()
 
     alert("Senha alterada com sucesso!")
 
     window.location.href = "/"
-
+    setLoading(false)
   }
 
   return (
