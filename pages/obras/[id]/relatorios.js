@@ -176,6 +176,86 @@ function formatDateOnly(value) {
   return d.toLocaleDateString('pt-BR')
 }
 
+function startOfToday() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+function issueDeadlineMeta(issue) {
+  const dueValue = safeStr(issue?.due_date).trim()
+  const status = normalizeIssueStatus(issue?.status)
+
+  if (!dueValue || status === 'resolved') {
+    return {
+      label: 'Sem data ou com folga',
+      color: '#EAB308',
+      background: '#FEF9C3',
+      rgb: [234, 179, 8],
+    }
+  }
+
+  const due = new Date(dueValue.length <= 10 ? `${dueValue}T12:00:00` : dueValue)
+  if (Number.isNaN(due.getTime())) {
+    return {
+      label: 'Sem data ou com folga',
+      color: '#EAB308',
+      background: '#FEF9C3',
+      rgb: [234, 179, 8],
+    }
+  }
+
+  const today = startOfToday()
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate())
+  const diffDays = Math.round((dueDay.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) {
+    return {
+      label: 'Vencida',
+      color: '#DC2626',
+      background: '#FEE2E2',
+      rgb: [220, 38, 38],
+    }
+  }
+
+  if (diffDays <= 2) {
+    return {
+      label: 'Perto de vencer',
+      color: '#F97316',
+      background: '#FFEDD5',
+      rgb: [249, 115, 22],
+    }
+  }
+
+  return {
+    label: 'Sem data ou com folga',
+    color: '#EAB308',
+    background: '#FEF9C3',
+    rgb: [234, 179, 8],
+  }
+}
+
+function renderIssueDeadlineInline(issue) {
+  const meta = issueDeadlineMeta(issue)
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span
+        aria-hidden="true"
+        title={meta.label}
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: 999,
+          background: meta.color,
+          boxShadow: `0 0 0 4px ${meta.background}`,
+          flex: '0 0 auto',
+        }}
+      />
+      <b>{formatDateOnly(issue?.due_date) || '-'}</b>
+    </span>
+  )
+}
+
 function toInputDate(value) {
   if (!value) return ''
   const d = new Date(value)
@@ -460,6 +540,21 @@ async function createPdfEngine(title, subtitle) {
     y += Math.max(10, used + 4)
   }
 
+  function drawLabelValueWithIndicator(label, value, indicatorRgb) {
+    addPageIfNeeded(14)
+    setBoldFont(10)
+    pdf.text(`${label}:`, margin, y)
+
+    const dotX = valueX + 1.8
+    const dotY = y + 1.3
+    pdf.setFillColor(...indicatorRgb)
+    pdf.circle(dotX, dotY, 1.4, 'F')
+
+    setBaseFont()
+    const used = drawWrappedText(safeStr(value) || '-', valueX + 6, y - 1, valueWidth - 6, 11)
+    y += Math.max(10, used + 4)
+  }
+
   function drawDivider() {
     addPageIfNeeded(8)
     pdf.setDrawColor(215)
@@ -596,6 +691,7 @@ async function createPdfEngine(title, subtitle) {
     writeParagraph,
     drawSectionTitle,
     drawLabelValue,
+    drawLabelValueWithIndicator,
     drawDivider,
     resetSummaryCards,
     drawSummaryCard,
@@ -1285,6 +1381,7 @@ export default function ObraRelatoriosPage() {
       pdf,
       drawSectionTitle,
       drawLabelValue,
+      drawLabelValueWithIndicator,
       drawDivider,
       resetSummaryCards,
       drawSummaryCard,
@@ -1390,6 +1487,7 @@ export default function ObraRelatoriosPage() {
       pdf,
       drawSectionTitle,
       drawLabelValue,
+      drawLabelValueWithIndicator,
       drawDivider,
       resetSummaryCards,
       drawSummaryCard,
@@ -1492,7 +1590,7 @@ export default function ObraRelatoriosPage() {
         drawLabelValue('Etapa', row.stage_display_name)
         drawLabelValue('Status', issueStatusLabel(row.status))
         drawLabelValue('Início', formatDateTime(row.started_at) || '-')
-        drawLabelValue('Previsão', formatDateOnly(row.due_date) || '-')
+        drawLabelValueWithIndicator('Previsão', formatDateOnly(row.due_date) || '-', issueDeadlineMeta(row).rgb)
         drawLabelValue('Título', safeStr(row.title).trim() || 'Sem título')
         drawLabelValue('Última atualização', formatDateTime(row.updated_at || row.created_at) || '-')
 
@@ -2153,7 +2251,7 @@ export default function ObraRelatoriosPage() {
                       {safeStr(row.description).trim() || 'Sem descrição.'}
                     </div>
                     <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
-                      Início: <b>{formatDateTime(row.started_at) || '-'}</b> • Previsão: <b>{formatDateOnly(row.due_date) || '-'}</b>
+                      Início: <b>{formatDateTime(row.started_at) || '-'}</b> • Previsão: {renderIssueDeadlineInline(row)}
                     </div>
                     <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280' }}>
                       Atualizada em: <b>{formatDateTime(row.updated_at || row.created_at) || '-'}</b>
