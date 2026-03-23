@@ -1544,22 +1544,18 @@ export default function ObraDetalhePage() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(140px, 1fr))', gap: 10 }}>
-          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
-            <div style={{ fontSize: 12, color: '#666' }}>total</div>
-            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.total}</div>
-          </div>
-          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, minWidth: 0 }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, minWidth: 0 }}>
             <div style={{ fontSize: 12, color: '#666' }}>{STATUS_LABEL.pending}</div>
-            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.counts.pending || 0}</div>
+            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.counts.pending || 0}/{stats.total}</div>
           </div>
-          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, minWidth: 0 }}>
             <div style={{ fontSize: 12, color: '#666' }}>{STATUS_LABEL.in_progress}</div>
-            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.counts.in_progress || 0}</div>
+            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.counts.in_progress || 0}/{stats.total}</div>
           </div>
-          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+          <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, minWidth: 0 }}>
             <div style={{ fontSize: 12, color: '#666' }}>{STATUS_LABEL.done}</div>
-            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.counts.done || 0}</div>
+            <div style={{ fontSize: 18, fontWeight: 900 }}>{stats.counts.done || 0}/{stats.total}</div>
           </div>
         </div>
       </div>
