@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
-import { createIssue, listIssuesByUnit, updateIssue } from '../../lib/issues-service'
+import { createIssue, deleteIssue, listIssuesByUnit, sortIssuesByUrgency, updateIssue } from '../../lib/issues-service'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -32,6 +32,24 @@ const STATUS_PT = {
   pending: 'Pendente',
   in_progress: 'Em andamento',
   done: 'Concluído',
+}
+
+const STATUS_TONE = {
+  pending: {
+    background: '#FEE2E2',
+    color: '#991B1B',
+    hover: '#FECACA',
+  },
+  in_progress: {
+    background: '#FEF3C7',
+    color: '#92400E',
+    hover: '#FDE68A',
+  },
+  done: {
+    background: '#DCFCE7',
+    color: '#166534',
+    hover: '#BBF7D0',
+  },
 }
 
 function safeStr(v) {
@@ -66,85 +84,29 @@ function formatDateTime(value) {
 
 function formatDateOnly(value) {
   if (!value) return ''
-  const raw = safeStr(value).trim()
-  const d = new Date(raw.length <= 10 ? `${raw}T12:00:00` : raw)
+  const dateValue = safeStr(value).trim().length <= 10 ? `${safeStr(value).trim()}T12:00:00` : value
+  const d = new Date(dateValue)
   if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleDateString('pt-BR')
 }
 
-function startOfToday() {
-  const now = new Date()
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+function toDateInputValue(value) {
+  const raw = safeStr(value).trim()
+  if (!raw) return ''
+  if (raw.length >= 10) return raw.slice(0, 10)
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return ''
+  const year = d.getFullYear()
+  const month = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
-function issueDeadlineMeta(issue) {
-  const dueValue = safeStr(issue?.due_date).trim()
-  const status = safeStr(issue?.status).trim().toLowerCase()
-
-  if (!dueValue || status === 'resolved') {
-    return {
-      label: 'Sem data ou com folga',
-      color: '#EAB308',
-      background: '#FEF9C3',
-    }
-  }
-
-  const due = new Date(dueValue.length <= 10 ? `${dueValue}T12:00:00` : dueValue)
-  if (Number.isNaN(due.getTime())) {
-    return {
-      label: 'Sem data ou com folga',
-      color: '#EAB308',
-      background: '#FEF9C3',
-    }
-  }
-
-  const today = startOfToday()
-  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate())
-  const diffDays = Math.round((dueDay.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-
-  if (diffDays < 0) {
-    return {
-      label: 'Vencida',
-      color: '#DC2626',
-      background: '#FEE2E2',
-    }
-  }
-
-  if (diffDays <= 2) {
-    return {
-      label: 'Perto de vencer',
-      color: '#F97316',
-      background: '#FFEDD5',
-    }
-  }
-
-  return {
-    label: 'Sem data ou com folga',
-    color: '#EAB308',
-    background: '#FEF9C3',
-  }
-}
-
-function renderIssueDeadlineInline(issue) {
-  const meta = issueDeadlineMeta(issue)
-
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span
-        aria-hidden="true"
-        title={meta.label}
-        style={{
-          width: 10,
-          height: 10,
-          borderRadius: 999,
-          background: meta.color,
-          boxShadow: `0 0 0 4px ${meta.background}`,
-          flex: '0 0 auto',
-        }}
-      />
-      <b>{formatDateOnly(issue?.due_date) || '—'}</b>
-    </span>
-  )
+function isIssueOverdue(issue) {
+  const dueDate = toDateInputValue(issue?.due_date)
+  if (!dueDate || safeStr(issue?.status) === 'resolved') return false
+  const today = toDateInputValue(new Date())
+  return dueDate < today
 }
 
 function formatStatusLabel(status) {
@@ -157,6 +119,59 @@ function formatIssueStatusLabel(status) {
 
 function formatIssuePriorityLabel(priority) {
   return ISSUE_PRIORITY_PT[priority] || priority || 'â€”'
+}
+
+function normalizeStageStatus(status) {
+  if (status === 'pending' || status === 'in_progress' || status === 'done') return status
+  return 'pending'
+}
+
+function issueStatusToStageStatus(status) {
+  if (status === 'resolved') return 'done'
+  if (status === 'in_progress') return 'in_progress'
+  return 'pending'
+}
+
+function getStatusTone(status) {
+  return STATUS_TONE[normalizeStageStatus(status)] || STATUS_TONE.pending
+}
+
+function getIssueStatusTone(status) {
+  return STATUS_TONE[issueStatusToStageStatus(status)] || STATUS_TONE.pending
+}
+
+function buildStatusPillStyle(tone, { interactive = false, expanded = false } = {}) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: '6px 12px',
+    minHeight: 30,
+    borderRadius: 999,
+    border: '1px solid transparent',
+    background: tone.background,
+    color: tone.color,
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: 1.2,
+    whiteSpace: 'nowrap',
+    transition: 'background-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease',
+    cursor: interactive ? 'pointer' : 'default',
+    width: expanded ? '100%' : 'auto',
+  }
+}
+
+function serializeIssueForLog(issue) {
+  if (!issue) return null
+  return {
+    id: issue.id || null,
+    title: safeStr(issue.title).trim(),
+    description: safeStr(issue.description).trim(),
+    priority: safeStr(issue.priority) || 'medium',
+    assigned_to: safeStr(issue.assigned_to) || null,
+    status: safeStr(issue.status) || 'open',
+  }
 }
 
 function buildLogDescription(log) {
@@ -209,6 +224,37 @@ function buildLogDescription(log) {
   if (action === 'stage_copied') {
     const name = safeStr(newValue?.new_stage_name).trim()
     return name ? `copiou a etapa para "${name}"` : 'copiou a etapa'
+  }
+
+  if (action === 'issue_created') {
+    const title = safeStr(newValue?.title).trim()
+    return title ? `criou a pendência "${title}"` : 'criou uma pendência'
+  }
+
+  if (action === 'issue_updated') {
+    const from = safeStr(oldValue?.title).trim()
+    const to = safeStr(newValue?.title).trim()
+    if (from && to && from !== to) return `editou a pendência "${from}" para "${to}"`
+    if (to) return `editou a pendência "${to}"`
+    return 'editou uma pendência'
+  }
+
+  if (action === 'issue_deleted') {
+    const title = safeStr(oldValue?.title).trim()
+    return title ? `excluiu a pendência "${title}"` : 'excluiu uma pendência'
+  }
+
+  if (action === 'issue_status_changed') {
+    const title = safeStr(newValue?.title || oldValue?.title).trim()
+    const from = formatIssueStatusLabel(oldValue?.status)
+    const to = formatIssueStatusLabel(newValue?.status)
+    if (title && oldValue?.status && newValue?.status) {
+      return `alterou o status da pendência "${title}" de "${from}" para "${to}"`
+    }
+    if (title && newValue?.status) {
+      return `alterou o status da pendência "${title}" para "${to}"`
+    }
+    return 'alterou o status de uma pendência'
   }
 
   return action ? action.replaceAll('_', ' ') : 'realizou uma ação'
@@ -491,7 +537,7 @@ export default function UnidadePage() {
   const [uploadingStageId, setUploadingStageId] = useState(null)
   const [deletingPhotoId, setDeletingPhotoId] = useState(null)
 
-  const [editingStatusStageId, setEditingStatusStageId] = useState(null)
+  const [openStatusMenuStageId, setOpenStatusMenuStageId] = useState(null)
   const [showArchived, setShowArchived] = useState(false)
 
   const [manageOpen, setManageOpen] = useState(false)
@@ -525,6 +571,13 @@ export default function UnidadePage() {
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [openActionMenuStageId])
+
+  useEffect(() => {
+    if (!openStatusMenuStageId) return
+    const close = () => setOpenStatusMenuStageId(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [openStatusMenuStageId])
 
   const issueAssigneeNameById = useMemo(
     () =>
@@ -592,7 +645,7 @@ export default function UnidadePage() {
       priority: safeStr(issue?.priority) || 'medium',
       assigned_to: safeStr(issue?.assigned_to),
       status: safeStr(issue?.status) || 'open',
-      due_date: safeStr(issue?.due_date).slice(0, 10),
+      due_date: toDateInputValue(issue?.due_date),
     })
     setIssueModalOpen(true)
   }
@@ -602,6 +655,19 @@ export default function UnidadePage() {
     setIssueForm({
       ...EMPTY_ISSUE_FORM,
       unit_stage_id: stageId,
+    })
+  }
+
+  async function createStageLog(unitStageId, action, oldValue, newValue, actorId) {
+    const userId = actorId || user?.id
+    if (!unitStageId || !userId) return
+
+    await supabase.from('unit_stage_logs').insert({
+      unit_stage_id: unitStageId,
+      user_id: userId,
+      action,
+      old_value: oldValue,
+      new_value: newValue,
     })
   }
 
@@ -788,6 +854,7 @@ export default function UnidadePage() {
           stage_id,
           status,
           started_at,
+          due_date,
           finished_at,
           notes,
           custom_name,
@@ -823,7 +890,7 @@ export default function UnidadePage() {
       console.error('Erro ao carregar issues da unidade:', issuesErr)
       setIssues([])
     } else {
-      setIssues(Array.isArray(issuesRows) ? issuesRows : [])
+      setIssues(sortIssuesByUrgency(Array.isArray(issuesRows) ? issuesRows : []))
     }
 
     if (assigneesErr) {
@@ -909,16 +976,23 @@ export default function UnidadePage() {
   async function saveIssue() {
     const currentStageId = safeStr(issueForm.unit_stage_id || issueModalStageId)
     const trimmedTitle = safeStr(issueForm.title).trim()
+    const currentUser = user || (await ensureAuth())
+    const existingIssue = editingIssueId ? issues.find((issue) => issue.id === editingIssueId) || null : null
     if (!currentStageId) {
       alert('Selecione uma etapa para a pendência.')
       return
     }
     if (!trimmedTitle) {
-      alert('Informe o título da issue.')
+      alert('Informe o título da pendência.')
       return
     }
     if (!editingIssueId && (!unit?.project_id || !unit?.tenant_id)) {
       alert('Não foi possível identificar a obra da unidade para criar a pendência.')
+      return
+    }
+
+    if (!editingIssueId && !currentUser?.id) {
+      alert('Não foi possível identificar o usuário para criar a pendência.')
       return
     }
 
@@ -932,7 +1006,7 @@ export default function UnidadePage() {
         priority: safeStr(issueForm.priority) || 'medium',
         assigned_to: safeStr(issueForm.assigned_to),
         status: safeStr(issueForm.status) || 'open',
-        due_date: safeStr(issueForm.due_date).trim(),
+        due_date: safeStr(issueForm.due_date),
       }
 
       const result = editingIssueId
@@ -941,12 +1015,34 @@ export default function UnidadePage() {
             tenant_id: unit?.tenant_id,
             project_id: unit?.project_id,
             unit_id: unitId,
+            created_by: currentUser.id,
+            started_at: new Date().toISOString(),
             ...payload,
           })
 
       if (result.error) {
-        alert(`Erro ao salvar issue: ${result.error.message}`)
+        alert(`Erro ao salvar pendência: ${result.error.message}`)
         return
+      }
+
+      const savedIssue = result.data || { id: editingIssueId, ...payload }
+
+      if (editingIssueId) {
+        await createStageLog(
+          currentStageId,
+          'issue_updated',
+          serializeIssueForLog(existingIssue),
+          serializeIssueForLog(savedIssue),
+          currentUser?.id
+        )
+      } else {
+        await createStageLog(
+          currentStageId,
+          'issue_created',
+          null,
+          serializeIssueForLog(savedIssue),
+          currentUser?.id
+        )
       }
 
       setIssueModalOpen(false)
@@ -962,23 +1058,67 @@ export default function UnidadePage() {
     try {
       setIssueSavingId(issueId)
 
-      const { error } = await updateIssue(issueId, { status: nextStatus })
+      const currentUser = user || (await ensureAuth())
+      const currentIssue = issues.find((issue) => issue.id === issueId)
+      if (!currentIssue || !currentUser?.id) return
+
+      const issuePatch = { status: nextStatus }
+      if (!currentIssue?.started_at && nextStatus === 'in_progress') {
+        issuePatch.started_at = new Date().toISOString()
+      }
+
+      const { data, error } = await updateIssue(issueId, issuePatch)
       if (error) {
-        alert(`Erro ao atualizar issue: ${error.message}`)
+        alert(`Erro ao atualizar pendência: ${error.message}`)
         return
       }
 
-      setIssues((prev) =>
-        prev.map((issue) =>
-          issue.id === issueId
-            ? {
-                ...issue,
-                status: nextStatus,
-                updated_at: new Date().toISOString(),
-              }
-            : issue
-        )
+      await createStageLog(
+        currentIssue.unit_stage_id,
+        'issue_status_changed',
+        serializeIssueForLog(currentIssue),
+        serializeIssueForLog(data || { ...currentIssue, status: nextStatus }),
+        currentUser.id
       )
+
+      await loadAll()
+    } finally {
+      setIssueSavingId('')
+    }
+  }
+
+  async function deleteIssueRecord(issue) {
+    if (!issue?.id) return
+
+    const currentUser = user || (await ensureAuth())
+    if (!currentUser?.id) {
+      alert('Não foi possível identificar o usuário para excluir a pendência.')
+      return
+    }
+
+    const ok = window.confirm(`Excluir a pendência "${safeStr(issue.title).trim() || 'Sem título'}"?`)
+    if (!ok) return
+
+    try {
+      setIssueSavingId(issue.id)
+
+      const { error } = await deleteIssue(issue.id)
+      if (error) {
+        alert(`Erro ao excluir pendência: ${error.message}`)
+        return
+      }
+
+      setIssues((prev) => prev.filter((row) => row.id !== issue.id))
+
+      await createStageLog(
+        issue.unit_stage_id,
+        'issue_deleted',
+        serializeIssueForLog(issue),
+        null,
+        currentUser.id
+      )
+
+      await loadAll()
     } finally {
       setIssueSavingId('')
     }
@@ -1013,6 +1153,28 @@ export default function UnidadePage() {
           old_value: { status: oldStatus },
           new_value: { status: newStatus },
         })
+      }
+
+      await loadAll()
+    } finally {
+      setBusyStageId(null)
+    }
+  }
+
+  async function saveStageDueDate(unitStageId, dueDateValue) {
+    try {
+      setBusyStageId(unitStageId)
+
+      const current = stages.find((s) => s.id === unitStageId)
+      const nextDueDate = safeStr(dueDateValue).trim() || null
+      const currentDueDate = safeStr(current?.due_date).trim() || null
+
+      if (currentDueDate === nextDueDate) return
+
+      const { error } = await supabase.from('unit_stages').update({ due_date: nextDueDate }).eq('id', unitStageId)
+      if (error) {
+        alert(`Erro ao salvar previsão: ${error.message}`)
+        return
       }
 
       await loadAll()
@@ -1675,7 +1837,6 @@ export default function UnidadePage() {
 
                       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
                         <span>Responsável: <b>{assigneeName}</b></span>
-                        <span>Previsão: {renderIssueDeadlineInline(issue)}</span>
                         <span>Criada em: <b>{formatDateTime(issue.created_at) || '—'}</b></span>
                         <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
                       </div>
@@ -1782,6 +1943,7 @@ export default function UnidadePage() {
                       background: '#fff',
                       fontWeight: 800,
                       whiteSpace: 'nowrap',
+                      display: 'none',
                     }}
                     title="Status atual"
                   >
@@ -1791,18 +1953,19 @@ export default function UnidadePage() {
                   <button
                     type="button"
                     disabled={isBusy || isUploading}
-                    onClick={() => setEditingStatusStageId((prev) => (prev === s.id ? null : s.id))}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOpenStatusMenuStageId((prev) => (prev === s.id ? null : s.id))
+                    }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone(s.status), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
                       whiteSpace: 'nowrap',
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
-                    Alterar
+                    <span>{STATUS_PT[s.status] || 'â€”'}</span>
+                    <span style={{ fontSize: 11 }}>{openStatusMenuStageId === s.id ? '▲' : '▼'}</span>
                   </button>
 
                   <button
@@ -1940,22 +2103,20 @@ export default function UnidadePage() {
                 </div>
               </div>
 
-              {editingStatusStageId === s.id ? (
+              {openStatusMenuStageId === s.id ? (
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button
                     type="button"
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'pending')
-                      setEditingStatusStageId(null)
+                      setOpenStatusMenuStageId(null)
                     }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone('pending'), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
+                      background: s.status === 'pending' ? getStatusTone('pending').hover : getStatusTone('pending').background,
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
                     Pendente
@@ -1966,15 +2127,13 @@ export default function UnidadePage() {
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'in_progress')
-                      setEditingStatusStageId(null)
+                      setOpenStatusMenuStageId(null)
                     }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone('in_progress'), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
+                      background: s.status === 'in_progress' ? getStatusTone('in_progress').hover : getStatusTone('in_progress').background,
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
                     Em andamento
@@ -1985,21 +2144,67 @@ export default function UnidadePage() {
                     disabled={isBusy || isUploading}
                     onClick={async () => {
                       await updateStageStatus(s.id, 'done')
-                      setEditingStatusStageId(null)
+                      setOpenStatusMenuStageId(null)
                     }}
                     style={{
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: '1px solid #ddd',
-                      background: '#fff',
+                      ...buildStatusPillStyle(getStatusTone('done'), { interactive: true }),
                       cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
-                      fontWeight: 700,
+                      background: s.status === 'done' ? getStatusTone('done').hover : getStatusTone('done').background,
+                      opacity: isBusy || isUploading ? 0.65 : 1,
                     }}
                   >
                     Concluído
                   </button>
                 </div>
               ) : null}
+
+              <div
+                style={{
+                  marginTop: 12,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 12,
+                    padding: 12,
+                    background: '#fafafa',
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>Início</div>
+                  <div style={{ fontSize: 14, fontWeight: 800 }}>{formatDateOnly(s.started_at) || '—'}</div>
+                </div>
+
+                <div
+                  style={{
+                    border: '1px solid #eee',
+                    borderRadius: 12,
+                    padding: 12,
+                    background: '#fafafa',
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Previsão</div>
+                  <input
+                    type="date"
+                    value={toDateInputValue(s.due_date)}
+                    onChange={(e) => saveStageDueDate(s.id, e.target.value)}
+                    disabled={isBusy || isUploading}
+                    style={{
+                      ...{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 12,
+                        border: '1px solid #ddd',
+                        outline: 'none',
+                        background: '#fff',
+                      },
+                    }}
+                  />
+                </div>
+              </div>
 
               <div
                 style={{
@@ -2297,7 +2502,7 @@ export default function UnidadePage() {
                       <div style={{ display: 'grid', gap: 6 }}>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                           <div style={{ fontSize: 15, fontWeight: 800 }}>{issue.title || 'Sem título'}</div>
-                          <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, border: '1px solid #ddd', fontWeight: 800 }}>
+                          <span style={{ ...buildStatusPillStyle(getIssueStatusTone(issue.status)), fontSize: 12, minHeight: 26, padding: '4px 8px' }}>
                             {formatIssueStatusLabel(issue.status)}
                           </span>
                           <span style={{ fontSize: 12, padding: '4px 8px', borderRadius: 999, border: '1px solid #ddd', background: '#f7f7f7', fontWeight: 800 }}>
@@ -2309,31 +2514,53 @@ export default function UnidadePage() {
                         </div>
                         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
                           <span>Responsável: <b>{assigneeName}</b></span>
-                          <span>Previsão: {renderIssueDeadlineInline(issue)}</span>
+                          <span>Início: <b>{formatDateOnly(issue.started_at) || '—'}</b></span>
+                          <span>Previsão: <b>{formatDateOnly(issue.due_date) || '—'}</b></span>
                           <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
+                          {isIssueOverdue(issue) ? <span style={{ color: '#b00020', fontWeight: 900 }}>Atrasada</span> : null}
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => openEditIssueModal(issue)}
-                        disabled={savingStatus || issueModalBusy}
-                        style={{
-                          padding: '8px 10px',
-                          borderRadius: 10,
-                          border: '1px solid #ddd',
-                          background: '#fff',
-                          cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
-                          fontWeight: 700,
-                        }}
-                      >
-                        Editar
-                      </button>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          onClick={() => openEditIssueModal(issue)}
+                          disabled={savingStatus || issueModalBusy}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: 10,
+                            border: '1px solid #ddd',
+                            background: '#fff',
+                            cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Editar
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => deleteIssueRecord(issue)}
+                          disabled={savingStatus || issueModalBusy}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: 10,
+                            border: '1px solid #f3d0d0',
+                            background: '#fff5f5',
+                            color: '#991B1B',
+                            cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Excluir pendência
+                        </button>
+                      </div>
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       {['open', 'in_progress', 'resolved'].map((status) => {
                         const active = issue.status === status
+                        const tone = getIssueStatusTone(status)
                         return (
                           <button
                             key={status}
@@ -2341,13 +2568,10 @@ export default function UnidadePage() {
                             disabled={savingStatus || issueModalBusy || active}
                             onClick={() => changeIssueStatus(issue.id, status)}
                             style={{
-                              padding: '8px 10px',
-                              borderRadius: 10,
-                              border: '1px solid #ddd',
-                              background: active ? '#111' : '#fff',
-                              color: active ? '#fff' : '#111',
+                              ...buildStatusPillStyle(tone, { interactive: true }),
+                              background: active ? tone.hover : tone.background,
                               cursor: savingStatus || issueModalBusy || active ? 'not-allowed' : 'pointer',
-                              fontWeight: 700,
+                              opacity: savingStatus || issueModalBusy ? 0.65 : 1,
                             }}
                           >
                             {formatIssueStatusLabel(status)}
@@ -2371,7 +2595,7 @@ export default function UnidadePage() {
               value={issueForm.title}
               onChange={(e) => setIssueForm((prev) => ({ ...prev, title: e.target.value }))}
               disabled={issueModalBusy}
-              placeholder="Resumo da issue"
+              placeholder="Resumo da pendência"
               style={{
                 padding: '10px 12px',
                 borderRadius: 12,
@@ -2387,7 +2611,7 @@ export default function UnidadePage() {
               value={issueForm.description}
               onChange={(e) => setIssueForm((prev) => ({ ...prev, description: e.target.value }))}
               disabled={issueModalBusy}
-              placeholder="Detalhes da issue"
+              placeholder="Detalhes da pendência"
               style={{
                 width: '100%',
                 minHeight: 140,
@@ -2468,7 +2692,7 @@ export default function UnidadePage() {
             </div>
 
             <div style={{ display: 'grid', gap: 6 }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>PrevisÃ£o</div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: '#444' }}>Previsão</div>
               <input
                 type="date"
                 value={issueForm.due_date}
