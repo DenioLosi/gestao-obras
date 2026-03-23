@@ -63,6 +63,89 @@ function formatDateTime(value) {
   return d.toLocaleString('pt-BR')
 }
 
+function formatDateOnly(value) {
+  if (!value) return ''
+  const raw = safeStr(value).trim()
+  const d = new Date(raw.length <= 10 ? `${raw}T12:00:00` : raw)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('pt-BR')
+}
+
+function startOfToday() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+function issueDeadlineMeta(issue) {
+  const dueValue = safeStr(issue?.due_date).trim()
+  const status = safeStr(issue?.status).trim().toLowerCase()
+
+  if (!dueValue || status === 'resolved') {
+    return {
+      label: 'Sem data ou com folga',
+      color: '#D4A017',
+      background: '#FEF3C7',
+    }
+  }
+
+  const due = new Date(dueValue.length <= 10 ? `${dueValue}T12:00:00` : dueValue)
+  if (Number.isNaN(due.getTime())) {
+    return {
+      label: 'Sem data ou com folga',
+      color: '#D4A017',
+      background: '#FEF3C7',
+    }
+  }
+
+  const today = startOfToday()
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate())
+  const diffDays = Math.round((dueDay.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) {
+    return {
+      label: 'Vencida',
+      color: '#D96C6C',
+      background: '#FDE2E2',
+    }
+  }
+
+  if (diffDays <= 2) {
+    return {
+      label: 'Perto de vencer',
+      color: '#D9822B',
+      background: '#FDE7C7',
+    }
+  }
+
+  return {
+    label: 'Sem data ou com folga',
+    color: '#D4A017',
+    background: '#FEF3C7',
+  }
+}
+
+function renderIssueDeadlineInline(issue) {
+  const meta = issueDeadlineMeta(issue)
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span
+        aria-hidden="true"
+        title={meta.label}
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: 999,
+          background: meta.color,
+          boxShadow: `0 0 0 4px ${meta.background}`,
+          flex: '0 0 auto',
+        }}
+      />
+      <b>{formatDateOnly(issue?.due_date) || '—'}</b>
+    </span>
+  )
+}
+
 function formatStatusLabel(status) {
   return STATUS_PT[status] || status || '—'
 }
@@ -471,7 +554,7 @@ export default function UnidadePage() {
     for (const issue of issues || []) {
       const key = safeStr(issue?.unit_stage_id)
       if (!key) continue
-      if (safeStr(issue?.status) !== 'open') continue
+      if (safeStr(issue?.status) === 'resolved') continue
       counts[key] = (counts[key] || 0) + 1
     }
     return counts
@@ -1589,6 +1672,7 @@ export default function UnidadePage() {
 
                       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
                         <span>Responsável: <b>{assigneeName}</b></span>
+                        <span>Previsão: {renderIssueDeadlineInline(issue)}</span>
                         <span>Criada em: <b>{formatDateTime(issue.created_at) || '—'}</b></span>
                         <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
                       </div>
@@ -2222,6 +2306,7 @@ export default function UnidadePage() {
                         </div>
                         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: '#666' }}>
                           <span>Responsável: <b>{assigneeName}</b></span>
+                          <span>Previsão: {renderIssueDeadlineInline(issue)}</span>
                           <span>Atualizada em: <b>{formatDateTime(issue.updated_at) || '—'}</b></span>
                         </div>
                       </div>
