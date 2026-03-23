@@ -15,7 +15,7 @@ export default function AlterarSenha() {
 
     setLoading(true)
 
-    const { data: authData, error } = await supabase.auth.updateUser({
+    const { error } = await supabase.auth.updateUser({
       password: senha
     })
 
@@ -25,7 +25,15 @@ export default function AlterarSenha() {
       return
     }
 
-    const userId = authData?.user?.id
+    const { data: userData, error: userError } = await supabase.auth.getUser()
+
+    if (userError) {
+      alert(userError.message)
+      setLoading(false)
+      return
+    }
+
+    const userId = userData?.user?.id
 
     if (!userId) {
       alert("Não foi possível identificar o usuário autenticado.")
@@ -33,10 +41,12 @@ export default function AlterarSenha() {
       return
     }
 
-    const { error: profileError } = await supabase
+    const { data: updatedProfile, error: profileError } = await supabase
       .from("profiles")
       .update({ must_change_password: false })
       .eq("id", userId)
+      .select("id, must_change_password")
+      .maybeSingle()
 
     if (profileError) {
       alert(profileError.message)
@@ -44,11 +54,33 @@ export default function AlterarSenha() {
       return
     }
 
-    await supabase.auth.refreshSession()
+    if (!updatedProfile) {
+      alert("NÃ£o foi possÃ­vel concluir o primeiro acesso no perfil do usuÃ¡rio.")
+      setLoading(false)
+      return
+    }
+
+    const { data: confirmedProfile, error: confirmError } = await supabase
+      .from("profiles")
+      .select("id, must_change_password")
+      .eq("id", userId)
+      .maybeSingle()
+
+    if (confirmError) {
+      alert(confirmError.message)
+      setLoading(false)
+      return
+    }
+
+    if (!confirmedProfile || confirmedProfile.must_change_password) {
+      alert("A troca de senha foi salva, mas o primeiro acesso ainda nÃ£o foi concluÃ­do.")
+      setLoading(false)
+      return
+    }
 
     alert("Senha alterada com sucesso!")
 
-    window.location.href = "/"
+    window.location.replace("/")
     setLoading(false)
   }
 
