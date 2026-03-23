@@ -37,6 +37,49 @@ function includesText(v, q) {
   return safeStr(v).toLowerCase().includes(q)
 }
 
+function normalizeLookupKey(v) {
+  return safeStr(v).trim().toLowerCase()
+}
+
+function normalizeImportedStageStatus(status) {
+  const value = safeStr(status).trim().toLowerCase()
+  if (!value) return 'pending'
+  if (value === 'pending' || value === 'in_progress' || value === 'done') return value
+  return null
+}
+
+function parseCsvLine(line) {
+  const out = []
+  let current = ''
+  let inQuotes = false
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"'
+        i += 1
+        continue
+      }
+
+      inQuotes = !inQuotes
+      continue
+    }
+
+    if (char === ',' && !inQuotes) {
+      out.push(current)
+      current = ''
+      continue
+    }
+
+    current += char
+  }
+
+  out.push(current)
+  return out.map((value) => safeStr(value).trim())
+}
+
 function getTime(v) {
   const t = v?.created_at ? new Date(v.created_at).getTime() : 0
   return Number.isNaN(t) ? 0 : t
@@ -111,6 +154,11 @@ export default function ObrasPainelPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editProjectId, setEditProjectId] = useState(null)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importCsvText, setImportCsvText] = useState('')
+  const [importFileName, setImportFileName] = useState('')
+  const [importSummary, setImportSummary] = useState(null)
 
   const [formName, setFormName] = useState('')
   const [formDescription, setFormDescription] = useState('')
@@ -338,6 +386,290 @@ export default function ObrasPainelPage() {
     setModalOpen(false)
   }
 
+  function openImportModal() {
+    setImportOpen(true)
+    setImportSummary(null)
+  }
+
+  function closeImportModal() {
+    if (importBusy) return
+    setImportOpen(false)
+  }
+
+  async function handleImportFileChange(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      setImportCsvText(text)
+      setImportFileName(file.name || '')
+      setImportSummary(null)
+    } catch (error) {
+      alert(`Erro ao ler arquivo: ${error.message}`)
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  async function importBulkStageStatusCsv() {
+    const rawText = safeStr(importCsvText).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    if (!rawText.trim()) {
+      alert('Cole o CSV ou selecione um arquivo .csv.')
+      return
+    }
+
+    const allLines = rawText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+
+    if (allLines.length === 0) {
+      alert('CSV vazio.')
+      return
+    }
+
+    let startIndex = 0
+    const firstColumns = parseCsvLine(allLines[0]).map((value) => normalizeLookupKey(value))
+    const hasHeader =
+      firstColumns.length >= 4 &&
+      firstColumns[0] === 'obra' &&
+      firstColumns[1] === 'unidade' &&
+      firstColumns[2] === 'etapa' &&
+      firstColumns[3] === 'status'
+
+    if (hasHeader) startIndex = 1
+
+    const invalidLines = []
+    const parsedRows = []
+
+    for (let index = startIndex; index < allLines.length; index += 1) {
+      const lineNumber = index + 1
+      const columns = parseCsvLine(allLines[index])
+
+      if (columns.length !== 4) {
+        invalidLines.push(`Linha ${lineNumber}: formato inválido`)
+        continue
+      }
+
+      const [projectName, unitIdentifier, stageName, rawStatus] = columns
+      const normalizedStatus = normalizeImportedStageStatus(rawStatus)
+
+      if (!projectName || !unitIdentifier || !stageName || !normalizedStatus) {
+        invalidLines.push(`Linha ${lineNumber}: dados inválidos`)
+        continue
+      }
+
+      parsedRows.push({
+        lineNumber,
+        projectName,
+        unitIdentifier,
+        stageName,
+        status: normalizedStatus,
+      })
+    }
+
+    if (parsedRows.length === 0) {
+      setImportSummary({
+        updated: 0,
+        unchanged: 0,
+        invalid: invalidLines.length,
+        errors: invalidLines,
+      })
+      alert('Nenhuma linha válida encontrada no CSV.')
+      return
+    }
+
+    const projectBuckets = new Map()
+    for (const project of projects || []) {
+      const key = normalizeLookupKey(project?.name)
+      if (!key) continue
+      if (!projectBuckets.has(key)) projectBuckets.set(key, [])
+      projectBuckets.get(key).push(project)
+    }
+
+    const resolvedRows = []
+    const errors = [...invalidLines]
+
+    for (const row of parsedRows) {
+      const projectMatches = projectBuckets.get(normalizeLookupKey(row.projectName)) || []
+
+      if (projectMatches.length === 0) {
+        errors.push(`Linha ${row.lineNumber}: obra não encontrada (${row.projectName})`)
+        continue
+      }
+
+      if (projectMatches.length > 1) {
+        errors.push(`Linha ${row.lineNumber}: obra duplicada (${row.projectName})`)
+        continue
+      }
+
+      resolvedRows.push({
+        ...row,
+        projectId: projectMatches[0].id,
+      })
+    }
+
+    if (resolvedRows.length === 0) {
+      setImportSummary({
+        updated: 0,
+        unchanged: 0,
+        invalid: invalidLines.length,
+        errors,
+      })
+      return
+    }
+
+    setImportBusy(true)
+    try {
+      const projectIds = [...new Set(resolvedRows.map((row) => row.projectId).filter(Boolean))]
+
+      const [{ data: unitsData, error: unitsError }, { data: stagesData, error: stagesError }] = await Promise.all([
+        supabase
+          .from('units')
+          .select('id, project_id, identifier')
+          .in('project_id', projectIds)
+          .limit(1000000),
+        supabase
+          .from('stages')
+          .select('id, project_id, name')
+          .in('project_id', projectIds)
+          .limit(1000000),
+      ])
+
+      if (unitsError) {
+        alert(`Erro ao carregar unidades para importação: ${unitsError.message}`)
+        return
+      }
+
+      if (stagesError) {
+        alert(`Erro ao carregar etapas para importação: ${stagesError.message}`)
+        return
+      }
+
+      const unitsByProjectAndIdentifier = new Map()
+      for (const unit of unitsData || []) {
+        const key = `${safeStr(unit.project_id)}::${normalizeLookupKey(unit.identifier)}`
+        unitsByProjectAndIdentifier.set(key, unit)
+      }
+
+      const stagesByProjectAndName = new Map()
+      for (const stage of stagesData || []) {
+        const key = `${safeStr(stage.project_id)}::${normalizeLookupKey(stage.name)}`
+        stagesByProjectAndName.set(key, stage)
+      }
+
+      const rowsWithRefs = []
+      for (const row of resolvedRows) {
+        const unitKey = `${safeStr(row.projectId)}::${normalizeLookupKey(row.unitIdentifier)}`
+        const stageKey = `${safeStr(row.projectId)}::${normalizeLookupKey(row.stageName)}`
+
+        const unit = unitsByProjectAndIdentifier.get(unitKey)
+        if (!unit) {
+          errors.push(`Linha ${row.lineNumber}: unidade não encontrada (${row.projectName} / ${row.unitIdentifier})`)
+          continue
+        }
+
+        const stage = stagesByProjectAndName.get(stageKey)
+        if (!stage) {
+          errors.push(`Linha ${row.lineNumber}: etapa não encontrada (${row.projectName} / ${row.stageName})`)
+          continue
+        }
+
+        rowsWithRefs.push({
+          ...row,
+          unitId: unit.id,
+          stageId: stage.id,
+        })
+      }
+
+      if (rowsWithRefs.length === 0) {
+        setImportSummary({
+          updated: 0,
+          unchanged: 0,
+          invalid: invalidLines.length,
+          errors,
+        })
+        return
+      }
+
+      const unitIds = [...new Set(rowsWithRefs.map((row) => row.unitId).filter(Boolean))]
+      const { data: unitStagesData, error: unitStagesError } = await supabase
+        .from('unit_stages')
+        .select('id, unit_id, stage_id, status')
+        .in('unit_id', unitIds)
+        .limit(1000000)
+
+      if (unitStagesError) {
+        alert(`Erro ao carregar etapas das unidades: ${unitStagesError.message}`)
+        return
+      }
+
+      const unitStagesByKey = new Map()
+      for (const row of unitStagesData || []) {
+        const key = `${safeStr(row.unit_id)}::${safeStr(row.stage_id)}`
+        unitStagesByKey.set(key, row)
+      }
+
+      const updatesByUnitStageId = new Map()
+      let unchanged = 0
+
+      for (const row of rowsWithRefs) {
+        const unitStageKey = `${safeStr(row.unitId)}::${safeStr(row.stageId)}`
+        const unitStage = unitStagesByKey.get(unitStageKey)
+
+        if (!unitStage) {
+          errors.push(`Linha ${row.lineNumber}: etapa não encontrada (${row.projectName} / ${row.unitIdentifier} / ${row.stageName})`)
+          continue
+        }
+
+        const currentStatus = normalizeImportedStageStatus(unitStage.status)
+        if (currentStatus === row.status) {
+          unchanged += 1
+          continue
+        }
+
+        updatesByUnitStageId.set(unitStage.id, {
+          id: unitStage.id,
+          status: row.status,
+        })
+      }
+
+      let updated = 0
+      for (const update of updatesByUnitStageId.values()) {
+        const { error } = await supabase.from('unit_stages').update({ status: update.status }).eq('id', update.id)
+        if (error) {
+          errors.push(`Erro ao atualizar registro ${update.id}: ${error.message}`)
+          continue
+        }
+        updated += 1
+      }
+
+      const summary = {
+        updated,
+        unchanged,
+        invalid: invalidLines.length,
+        errors,
+      }
+
+      setImportSummary(summary)
+
+      if (updated > 0) {
+        await loadData()
+      }
+
+      alert(
+        `Importação concluída.\n` +
+          `Atualizados: ${summary.updated}\n` +
+          `Sem mudança: ${summary.unchanged}\n` +
+          `Linhas inválidas: ${summary.invalid}\n` +
+          `Erros: ${summary.errors.length}`
+      )
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
   async function saveProject() {
     if (!isAdmin) return
 
@@ -448,6 +780,23 @@ export default function ObrasPainelPage() {
           {isAdmin ? (
             <Link href="/usuarios" style={{ textDecoration: 'none' }}>Gestão de Usuários</Link>
           ) : null}
+
+          <button
+            type="button"
+            onClick={openImportModal}
+            style={{
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              background: '#fff',
+              color: '#111',
+              cursor: 'pointer',
+              fontWeight: 800,
+              height: 'fit-content',
+            }}
+          >
+            Importar CSV
+          </button>
 
           {isAdmin ? (
             <button
@@ -911,6 +1260,121 @@ export default function ObrasPainelPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal open={importOpen} title="Importar status por CSV" onClose={closeImportModal}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ color: '#444', lineHeight: 1.45 }}>
+            Formato: <b>obra,unidade,etapa,status</b>
+            <br />
+            Status aceitos: <b>done</b>, <b>in_progress</b> ou vazio para <b>pending</b>.
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: importBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 700,
+                opacity: importBusy ? 0.6 : 1,
+              }}
+            >
+              Selecionar CSV
+              <input type="file" accept=".csv,text/csv" onChange={handleImportFileChange} disabled={importBusy} style={{ display: 'none' }} />
+            </label>
+
+            {importFileName ? <div style={{ fontSize: 12, color: '#666' }}>Arquivo: <b>{importFileName}</b></div> : null}
+          </div>
+
+          <textarea
+            value={importCsvText}
+            onChange={(e) => {
+              setImportCsvText(e.target.value)
+              setImportSummary(null)
+            }}
+            placeholder={'obra,unidade,etapa,status\nPratz36,401,rufação,done\nPratz36,401,rejunte,\nPratz36,402,rufação,done'}
+            style={{
+              minHeight: 220,
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid #ddd',
+              outline: 'none',
+              resize: 'vertical',
+              fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+              fontSize: 13,
+            }}
+            disabled={importBusy}
+          />
+
+          {importSummary ? (
+            <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 12, display: 'grid', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13 }}>
+                <div>Atualizados: <b>{importSummary.updated}</b></div>
+                <div>Sem mudança: <b>{importSummary.unchanged}</b></div>
+                <div>Linhas inválidas: <b>{importSummary.invalid}</b></div>
+                <div>Erros: <b>{importSummary.errors.length}</b></div>
+              </div>
+
+              {importSummary.errors.length > 0 ? (
+                <div
+                  style={{
+                    maxHeight: 180,
+                    overflowY: 'auto',
+                    background: '#fafafa',
+                    border: '1px solid #f0f0f0',
+                    borderRadius: 10,
+                    padding: 10,
+                    fontSize: 12,
+                    color: '#444',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {importSummary.errors.join('\n')}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: '#2f6b2f' }}>Nenhum erro encontrado.</div>
+              )}
+            </div>
+          ) : null}
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={closeImportModal}
+              disabled={importBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: importBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 800,
+              }}
+            >
+              Fechar
+            </button>
+
+            <button
+              type="button"
+              onClick={importBulkStageStatusCsv}
+              disabled={importBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#111',
+                color: '#fff',
+                cursor: importBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              {importBusy ? 'Importando…' : 'Importar e atualizar'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   )
