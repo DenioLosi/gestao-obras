@@ -1839,31 +1839,31 @@ export default function ObraDetalhePage() {
                     </span>
                   </div>
 
-                  <div style={{ display: 'grid', gap: 6, minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
+                  <div style={{ display: 'grid', gap: 6, minWidth: 0, width: '100%' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', fontSize: 13, color: '#444', minWidth: 0 }}>
                       <span>Progresso</span>
                       <b>{formatPct(metrics.progressPct)}</b>
                     </div>
 
-                    <div style={{ height: 10, width: '100%', background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
+                    <div style={{ height: 10, width: '100%', maxWidth: '100%', background: '#f0f0f0', borderRadius: 999, overflow: 'hidden', boxSizing: 'border-box' }}>
                       <div style={{ width: `${pctUnit}%`, height: '100%', background: '#111', opacity: 0.18 }} />
                     </div>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(88px, 1fr))', gap: 10, minWidth: 0 }}>
-                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, minWidth: 0, width: '100%' }}>
+                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, minWidth: 0 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>pendentes</div>
-                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.pendingStages}</div>
+                      <div style={{ fontSize: 18, fontWeight: 900, minWidth: 0 }}>{metrics.pendingStages}/{metrics.totalStages}</div>
                     </div>
 
-                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, minWidth: 0 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>em andamento</div>
-                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.inProgressStages}</div>
+                      <div style={{ fontSize: 18, fontWeight: 900, minWidth: 0 }}>{metrics.inProgressStages}/{metrics.totalStages}</div>
                     </div>
 
-                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
+                    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10, minWidth: 0 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>concluídas</div>
-                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.doneStages}</div>
+                      <div style={{ fontSize: 18, fontWeight: 900, minWidth: 0 }}>{metrics.doneStages}/{metrics.totalStages}</div>
                     </div>
                   </div>
                 </div>
