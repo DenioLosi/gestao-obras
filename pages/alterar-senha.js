@@ -2,12 +2,10 @@ import { useState } from "react"
 import { supabase } from "../lib/supabase"
 
 export default function AlterarSenha() {
-
   const [senha, setSenha] = useState("")
   const [loading, setLoading] = useState(false)
 
   async function salvar() {
-
     if (!senha || senha.length < 6) {
       alert("Senha deve ter no mínimo 6 caracteres")
       return
@@ -41,51 +39,60 @@ export default function AlterarSenha() {
       return
     }
 
-    const { data: updatedProfile, error: profileError } = await supabase
-      .from("profiles")
-      .update({ must_change_password: false })
-      .eq("id", userId)
-      .select("id, must_change_password")
-      .maybeSingle()
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
 
-    if (profileError) {
-      alert(profileError.message)
+    if (sessionError) {
+      alert(sessionError.message)
       setLoading(false)
       return
     }
 
-    if (!updatedProfile) {
-      alert("NÃ£o foi possÃ­vel concluir o primeiro acesso no perfil do usuÃ¡rio.")
+    const accessToken = sessionData?.session?.access_token
+
+    if (!accessToken) {
+      alert("Sessão inválida para concluir o primeiro acesso.")
       setLoading(false)
       return
     }
 
-    const { data: confirmedProfile, error: confirmError } = await supabase
-      .from("profiles")
-      .select("id, must_change_password")
-      .eq("id", userId)
-      .maybeSingle()
+    const response = await fetch("/api/auth/complete-first-access", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
 
-    if (confirmError) {
-      alert(confirmError.message)
+    const result = await response.json()
+
+    if (!response.ok) {
+      alert(result?.error || "Não foi possível concluir o primeiro acesso.")
       setLoading(false)
       return
     }
 
-    if (!confirmedProfile || confirmedProfile.must_change_password) {
-      alert("A troca de senha foi salva, mas o primeiro acesso ainda nÃ£o foi concluÃ­do.")
+    if (!result?.profile) {
+      alert("Perfil do usuário não foi encontrado.")
+      setLoading(false)
+      return
+    }
+
+    if (result.profile.id !== userId) {
+      alert("Perfil do usuário não foi confirmado após a troca de senha.")
+      setLoading(false)
+      return
+    }
+
+    if (result.profile.must_change_password) {
+      alert("A troca de senha foi salva, mas o primeiro acesso ainda não foi concluído.")
       setLoading(false)
       return
     }
 
     alert("Senha alterada com sucesso!")
-
     window.location.replace("/")
-    setLoading(false)
   }
 
   return (
-
     <div style={{
       minHeight:"100vh",
       display:"flex",
@@ -106,7 +113,7 @@ export default function AlterarSenha() {
         <h2>Alterar senha</h2>
 
         <p>
-        Primeiro acesso detectado.  
+        Primeiro acesso detectado.
         Defina uma nova senha.
         </p>
 
@@ -145,6 +152,5 @@ export default function AlterarSenha() {
       </div>
 
     </div>
-
   )
 }
