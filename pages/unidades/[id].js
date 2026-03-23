@@ -2311,6 +2311,7 @@ export default function UnidadePage() {
                     <input
                       type="file"
                       accept="image/*"
+                      capture="environment"
                       disabled={isUploading}
                       style={{ display: 'none' }}
                       onChange={async (e) => {
