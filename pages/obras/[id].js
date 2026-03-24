@@ -395,6 +395,7 @@ export default function ObraDetalhePage() {
           order_index,
           unit_stage_photos ( id, path, caption, kind, created_at, user_id )
         `)
+        .or('is_active.is.null,is_active.eq.true')
         .in('unit_id', unitIds)
         .limit(1000000)
 
@@ -411,6 +412,7 @@ export default function ObraDetalhePage() {
           if (!grouped[key]) grouped[key] = []
           grouped[key].push({
             ...row,
+            is_active: row?.is_active !== false,
             unit_stage_photos: Array.isArray(row.unit_stage_photos) ? row.unit_stage_photos : [],
           })
         }
@@ -1430,10 +1432,10 @@ export default function ObraDetalhePage() {
             const hasStageRows = Object.prototype.hasOwnProperty.call(unitStagesByUnitId, unitKey)
             const stageRows = unitStagesLoaded && hasStageRows ? unitStagesByUnitId[unitKey] : null
             const stageCounters = buildUnitStageCounters(stageRows)
-            const sampleRows = Array.isArray(stageRows) ? stageRows.slice(0, 3) : []
-            const sampleStatuses = sampleRows.map((row) => safeStr(row?.status).trim().toLowerCase() || '∅').join(', ')
-            const sampleActives = sampleRows
-              .map((row) => (row?.is_active === false ? 'false' : row?.is_active === true ? 'true' : 'null'))
+            const activeStageRows = Array.isArray(stageRows) ? stageRows.filter((row) => row?.is_active !== false) : []
+            const sampleActiveStatuses = activeStageRows
+              .slice(0, 3)
+              .map((row) => safeStr(row?.status).trim().toLowerCase() || '∅')
               .join(', ')
             const pctUnit = Math.round(clampPct(u.progress))
 
@@ -1491,7 +1493,7 @@ export default function ObraDetalhePage() {
                       lineHeight: 1.45,
                     }}
                   >
-                    DEBUG_UNIT: id={safeStr(u.id) || '—'} | identifier={safeStr(u.identifier) || '—'} | status={safeStr(u.status) || '—'} | progress={clampPct(u.progress)} | mapped={Array.isArray(stageRows) ? stageRows.length : 'null'} | done={stageCounters.doneCount ?? '--'} | pending={stageCounters.pendingCount ?? '--'} | in_progress={stageCounters.inProgressCount ?? '--'} | total={stageCounters.totalActiveStages ?? '--'} | sample=statuses=[{sampleStatuses}] active=[{sampleActives}]
+                    DEBUG_UNIT: id={safeStr(u.id) || '—'} | identifier={safeStr(u.identifier) || '—'} | status={safeStr(u.status) || '—'} | progress={clampPct(u.progress)} | mapped_active={Array.isArray(stageRows) ? activeStageRows.length : 'null'} | done={stageCounters.doneCount ?? '--'} | pending={stageCounters.pendingCount ?? '--'} | in_progress={stageCounters.inProgressCount ?? '--'} | total={stageCounters.totalActiveStages ?? '--'} | sample_active_statuses=[{sampleActiveStatuses}]
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
