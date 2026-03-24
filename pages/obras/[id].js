@@ -1399,6 +1399,22 @@ export default function ObraDetalhePage() {
         </div>
       </div>
 
+      <div
+        style={{
+          marginTop: 14,
+          maxWidth: 1100,
+          border: '1px solid #dbeafe',
+          background: '#eff6ff',
+          color: '#1d4ed8',
+          borderRadius: 12,
+          padding: '10px 12px',
+          fontSize: 13,
+          fontWeight: 900,
+        }}
+      >
+        DEBUG_CARD_VERSION: a2c883b
+      </div>
+
       <div style={{ marginTop: 14, maxWidth: 1100, display: 'grid', gap: 10 }}>
         {filteredUnits.length === 0 ? (
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
