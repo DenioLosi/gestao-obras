@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '../lib/supabase'
+import { runAdminAction } from '../lib/admin-api'
 
 const STATUS_LABEL = {
   pending: 'pendente',
@@ -698,9 +699,7 @@ export default function ObrasPainelPage() {
         const { error } = await supabase.from('projects').update(payload).eq('id', editProjectId)
         if (error) return alert(`Erro ao editar obra: ${error.message}`)
       } else {
-        payload.is_active = true
-        const { error } = await supabase.from('projects').insert(payload)
-        if (error) return alert(`Erro ao criar obra: ${error.message}`)
+        await runAdminAction('create_project', payload)
       }
 
       setModalOpen(false)
@@ -743,8 +742,7 @@ export default function ObrasPainelPage() {
 
     try {
       setSaving(true)
-      const { error } = await supabase.from('projects').delete().eq('id', card.id)
-      if (error) return alert(`Erro ao excluir obra: ${error.message}`)
+      await runAdminAction('delete_project', { project_id: card.id })
       setOpenMenuProjectId(null)
       await loadData()
     } finally {

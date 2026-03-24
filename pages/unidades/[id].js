@@ -3,6 +3,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
 import { createIssue, deleteIssue, listIssuesByUnit, sortIssuesByUrgency, updateIssue } from '../../lib/issues-service'
+import { runAdminAction } from '../../lib/admin-api'
+import { buildUnitStageDuplicateSummary } from '../../lib/unit-stage-dedupe'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -518,6 +520,8 @@ export default function UnidadePage() {
 
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState(null)
+  const [profile, setProfile] = useState(null)
+  const [duplicateReviewGroups, setDuplicateReviewGroups] = useState([])
 
   const [unit, setUnit] = useState(null)
   const [stages, setStages] = useState([])
@@ -718,15 +722,9 @@ export default function UnidadePage() {
       photos: Array.isArray(r.unit_stage_photos) ? r.unit_stage_photos : [],
       order_index: Number.isFinite(Number(r.order_index)) ? Number(r.order_index) : 1,
     }))
-
-    normalized.sort((a, b) => {
-      const ao = Number(a.order_index || 0)
-      const bo = Number(b.order_index || 0)
-      if (ao !== bo) return ao - bo
-      return safeStr(a.stage_name).localeCompare(safeStr(b.stage_name), 'pt-BR', { numeric: true })
-    })
-
-    return normalized
+    const summary = buildUnitStageDuplicateSummary(normalized)
+    setDuplicateReviewGroups(summary.reviewGroups)
+    return summary.rows
   }
 
   async function loadLogsForStages(stageList, currentUser) {
@@ -790,6 +788,21 @@ export default function UnidadePage() {
 
     const currentUser = await ensureAuth()
     if (!currentUser) return
+
+    const { data: currentProfile, error: profileErr } = await supabase
+      .from('profiles')
+      .select('id, role, status, tenant_id')
+      .eq('id', currentUser.id)
+      .maybeSingle()
+
+    if (profileErr || !currentProfile) {
+      alert(`Erro ao carregar perfil: ${profileErr?.message || 'perfil nao encontrado'}`)
+      setProfile(null)
+      setLoading(false)
+      return
+    }
+
+    setProfile(currentProfile)
 
     const { data: unitData, error: unitErr } = await supabase
       .from('units')
@@ -934,6 +947,8 @@ export default function UnidadePage() {
     return max + 1
   }
 
+  const isAdmin = profile?.role === 'admin'
+
   function openPhotoViewer(stagePhotos, photoId) {
     const sorted = [...(stagePhotos || [])].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
     setViewerPhotos(sorted)
@@ -972,6 +987,7 @@ export default function UnidadePage() {
   }
 
   function openCopyModal(stageRow) {
+    if (!isAdmin) return
     setOpenActionMenuStageId(null)
     setCopySourceStage(stageRow)
     setCopyName(`${stageRow.stage_name} (cópia)`)
@@ -1003,6 +1019,10 @@ export default function UnidadePage() {
       alert('Não foi possível identificar o usuário para criar a pendência.')
       return
     }
+    if (!editingIssueId && !isAdmin) {
+      alert('Apenas administradores podem criar pendências.')
+      return
+    }
 
     try {
       setIssueModalBusy(true)
@@ -1019,14 +1039,16 @@ export default function UnidadePage() {
 
       const result = editingIssueId
         ? await updateIssue(editingIssueId, payload)
-        : await createIssue({
-            tenant_id: unit?.tenant_id,
-            project_id: unit?.project_id,
-            unit_id: unitId,
-            created_by: currentUser.id,
-            started_at: new Date().toISOString(),
-            ...payload,
-          })
+        : {
+            data: (
+              await runAdminAction('create_issue', {
+                unit_id: unitId,
+                started_at: new Date().toISOString(),
+                ...payload,
+              })
+            ).issue,
+            error: null,
+          }
 
       if (result.error) {
         alert(`Erro ao salvar pendência: ${result.error.message}`)
@@ -1103,6 +1125,10 @@ export default function UnidadePage() {
       alert('Não foi possível identificar o usuário para excluir a pendência.')
       return
     }
+    if (!isAdmin) {
+      alert('Apenas administradores podem excluir pendências.')
+      return
+    }
 
     const ok = window.confirm(`Excluir a pendência "${safeStr(issue.title).trim() || 'Sem título'}"?`)
     if (!ok) return
@@ -1110,11 +1136,7 @@ export default function UnidadePage() {
     try {
       setIssueSavingId(issue.id)
 
-      const { error } = await deleteIssue(issue.id)
-      if (error) {
-        alert(`Erro ao excluir pendência: ${error.message}`)
-        return
-      }
+      await runAdminAction('delete_issue', { issue_id: issue.id })
 
       setIssues((prev) => prev.filter((row) => row.id !== issue.id))
 
@@ -1444,6 +1466,10 @@ export default function UnidadePage() {
   }
 
   async function copyStage() {
+    if (!isAdmin) {
+      alert('Apenas administradores podem copiar etapas.')
+      return
+    }
     if (!copySourceStage?.id) return
     if (!copyStructure && !copyNotes && !copyPhotos) {
       alert('Selecione ao menos um conteúdo para copiar.')
@@ -1459,54 +1485,16 @@ export default function UnidadePage() {
     try {
       setCopyBusy(true)
 
-      const payload = {
+      const json = await runAdminAction('copy_unit_stage', {
         unit_id: copySourceStage.unit_id,
-        stage_id: copySourceStage.stage_id,
-        status: 'pending',
+        source_stage_id: copySourceStage.id,
+        source_stage_name: copySourceStage.stage_name,
+        target_name: targetName,
         order_index: nextOrderIndex(),
-        is_active: true,
-        custom_name: targetName,
-        notes: copyNotes ? safeStr(copySourceStage.notes || '') : '',
-      }
-
-      const { data: newStage, error: newStageErr } = await supabase
-        .from('unit_stages')
-        .insert(payload)
-        .select('id, unit_id, stage_id, custom_name')
-        .maybeSingle()
-
-      if (newStageErr) {
-        alert(`Erro ao copiar etapa: ${newStageErr.message}`)
-        return
-      }
-
-      if (!newStage?.id) {
-        alert('Não foi possível obter a nova etapa copiada.')
-        return
-      }
-
-      if (copyPhotos) {
-        const sourcePhotos = Array.isArray(copySourceStage.photos) ? copySourceStage.photos : []
-
-        if (sourcePhotos.length > 0) {
-          const rows = sourcePhotos.map((p) => ({
-            unit_stage_id: newStage.id,
-            user_id: user.id,
-            kind: p.kind || 'image',
-            path: p.path,
-            caption: safeStr(p.caption || ''),
-          }))
-
-          const { error: photosErr } = await supabase
-            .from('unit_stage_photos')
-            .insert(rows)
-
-          if (photosErr) {
-            alert(`A etapa foi copiada, mas houve erro ao copiar as fotos: ${photosErr.message}`)
-            return
-          }
-        }
-      }
+        copy_notes: copyNotes,
+        copy_photos: copyPhotos,
+      })
+      const newStage = json.stage
 
       await supabase.from('unit_stage_logs').insert({
         unit_stage_id: copySourceStage.id,
@@ -1533,6 +1521,7 @@ export default function UnidadePage() {
   }
 
   async function addExistingStageToUnit() {
+    if (!isAdmin) return
     if (!addStageId) return
     if (!unit?.id) return
 
@@ -1544,20 +1533,11 @@ export default function UnidadePage() {
 
     setManageBusy(true)
     try {
-      const payload = {
+      await runAdminAction('add_existing_stage_to_unit', {
         unit_id: unit.id,
         stage_id: addStageId,
-        status: 'pending',
         order_index: nextOrderIndex(),
-        is_active: true,
-      }
-
-      const { error } = await supabase.from('unit_stages').insert(payload)
-      if (error) {
-        alert(`Erro ao adicionar etapa: ${error.message}`)
-        return
-      }
-
+      })
       await loadAll()
       setAddStageId('')
     } finally {
@@ -1566,48 +1546,18 @@ export default function UnidadePage() {
   }
 
   async function createStageTemplateAndAddToUnit() {
+    if (!isAdmin) return
     if (!unit?.project_id) return
     const name = safeStr(createStageName).trim()
     if (!name) return
 
     setManageBusy(true)
     try {
-      const maxOrder = (stageCatalog || []).reduce((m, s) => Math.max(m, Number(s.order_index || 0)), 0)
-      const { data: stageRow, error: sErr } = await supabase
-        .from('stages')
-        .insert({
-          project_id: unit.project_id,
-          name,
-          order_index: maxOrder + 1,
-          is_active: true,
-        })
-        .select('id')
-        .maybeSingle()
-
-      if (sErr) {
-        alert(`Erro ao criar etapa no modelo: ${sErr.message}`)
-        return
-      }
-
-      const stageId = stageRow?.id
-      if (!stageId) {
-        alert('Etapa criada, mas não retornou id.')
-        return
-      }
-
-      const { error: usErr } = await supabase.from('unit_stages').insert({
+      await runAdminAction('create_stage_template_and_add_to_unit', {
         unit_id: unit.id,
-        stage_id: stageId,
-        status: 'pending',
+        name,
         order_index: nextOrderIndex(),
-        is_active: true,
       })
-
-      if (usErr) {
-        alert(`Erro ao adicionar etapa na unidade: ${usErr.message}`)
-        return
-      }
-
       setCreateStageName('')
       await loadAll()
     } finally {
@@ -1674,6 +1624,7 @@ export default function UnidadePage() {
   }
 
   async function deleteUnitStage(unitStageId, stageName) {
+    if (!isAdmin) return
     const ok = window.confirm(
       `Excluir a etapa "${stageName}" desta unidade?\n\nObs: as fotos/notas dessa etapa podem ser removidas junto dependendo do seu banco.`
     )
@@ -1681,15 +1632,7 @@ export default function UnidadePage() {
 
     setManageBusy(true)
     try {
-      await supabase.from('unit_stage_photos').delete().eq('unit_stage_id', unitStageId)
-      await supabase.from('unit_stage_logs').delete().eq('unit_stage_id', unitStageId)
-
-      const { error } = await supabase.from('unit_stages').delete().eq('id', unitStageId)
-      if (error) {
-        alert(`Erro ao excluir etapa: ${error.message}`)
-        return
-      }
-
+      await runAdminAction('delete_unit_stage', { unit_stage_id: unitStageId })
       await loadAll()
     } finally {
       setManageBusy(false)
@@ -1730,26 +1673,40 @@ export default function UnidadePage() {
             Mostrar arquivadas
           </label>
 
-          <button
-            type="button"
-            onClick={() => setManageOpen(true)}
-            style={{
-              padding: '10px 12px',
-              borderRadius: 12,
-              border: '1px solid #ddd',
-              background: '#fff',
-              cursor: 'pointer',
-              fontWeight: 900,
-            }}
-          >
-            Gerenciar etapas
-          </button>
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={() => setManageOpen(true)}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Gerenciar etapas
+            </button>
+          ) : null}
 
           <Link href={`/obras/${unit.project_id}`}>← Voltar</Link>
         </div>
       </div>
 
       <hr style={{ margin: '18px 0' }} />
+
+      {!isAdmin ? (
+        <div style={{ marginBottom: 16, color: '#b00020' }}>
+          Apenas administradores podem criar, copiar ou excluir etapas e pendências.
+        </div>
+      ) : null}
+
+      {duplicateReviewGroups.length > 0 ? (
+        <div style={{ marginBottom: 16, color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 12, padding: 12 }}>
+          Esta unidade possui etapas duplicadas com dados conflitantes. A tela exibe apenas a etapa mais completa; a deduplicação definitiva deve ser supervisionada.
+        </div>
+      ) : null}
 
       {false ? (
         <div style={{ display: 'grid', gap: 14, maxWidth: 1180, marginBottom: 24 }}>
@@ -1904,7 +1861,8 @@ export default function UnidadePage() {
 
       {visibleStages.length === 0 ? (
         <div style={{ color: '#666' }}>
-          Nenhuma etapa {showArchived ? 'encontrada' : 'ativa'} nesta unidade. Clique em <b>Gerenciar etapas</b> para adicionar.
+          Nenhuma etapa {showArchived ? 'encontrada' : 'ativa'} nesta unidade.
+          {isAdmin ? ' Clique em Gerenciar etapas para adicionar.' : ''}
         </div>
       ) : null}
 
@@ -2018,9 +1976,10 @@ export default function UnidadePage() {
                   >
                     <button
                       type="button"
-                      disabled={isBusy || isUploading}
+                      disabled={!isAdmin || isBusy || isUploading}
                       onClick={(e) => {
                         e.stopPropagation()
+                        if (!isAdmin) return
                         setOpenActionMenuStageId((prev) => (prev === s.id ? null : s.id))
                       }}
                       style={{
@@ -2039,7 +1998,7 @@ export default function UnidadePage() {
                       ⋯
                     </button>
 
-                    {openActionMenuStageId === s.id ? (
+                    {isAdmin && openActionMenuStageId === s.id ? (
                       <div
                         style={{
                           position: 'absolute',
@@ -2485,13 +2444,13 @@ export default function UnidadePage() {
             <button
               type="button"
               onClick={() => startCreateIssueForStage(issueModalStageId)}
-              disabled={issueModalBusy || !issueModalStageId}
+              disabled={!isAdmin || issueModalBusy || !issueModalStageId}
               style={{
                 padding: '8px 10px',
                 borderRadius: 10,
                 border: '1px solid #ddd',
                 background: '#fff',
-                cursor: issueModalBusy || !issueModalStageId ? 'not-allowed' : 'pointer',
+                cursor: !isAdmin || issueModalBusy || !issueModalStageId ? 'not-allowed' : 'pointer',
                 fontWeight: 700,
               }}
             >
@@ -2556,13 +2515,13 @@ export default function UnidadePage() {
                         <button
                           type="button"
                           onClick={() => openEditIssueModal(issue)}
-                          disabled={savingStatus || issueModalBusy}
+                          disabled={!isAdmin || savingStatus || issueModalBusy}
                           style={{
                             padding: '8px 10px',
                             borderRadius: 10,
                             border: '1px solid #ddd',
                             background: '#fff',
-                            cursor: savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
+                            cursor: !isAdmin || savingStatus || issueModalBusy ? 'not-allowed' : 'pointer',
                             fontWeight: 700,
                           }}
                         >

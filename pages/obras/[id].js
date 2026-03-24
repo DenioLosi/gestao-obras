@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
+import { runAdminAction } from '../../lib/admin-api'
+import { buildUnitStageDuplicateSummary } from '../../lib/unit-stage-dedupe'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -183,10 +185,12 @@ export default function ObraDetalhePage() {
 
   const [loading, setLoading] = useState(true)
   const [userEmail, setUserEmail] = useState('')
+  const [profile, setProfile] = useState(null)
 
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
   const [unitStagesByUnitId, setUnitStagesByUnitId] = useState({})
+  const [duplicateStageWarnings, setDuplicateStageWarnings] = useState([])
 
   const [stageTemplates, setStageTemplates] = useState([])
   const [stagesOpen, setStagesOpen] = useState(false)
@@ -268,6 +272,26 @@ export default function ObraDetalhePage() {
     const u = await ensureAuth()
     if (!u) return
 
+    const { data: currentProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, role, status, tenant_id')
+      .eq('id', u.id)
+      .maybeSingle()
+
+    if (profileError || !currentProfile) {
+      alert(`Erro ao carregar perfil: ${profileError?.message || 'perfil nao encontrado'}`)
+      setProfile(null)
+      setProject(null)
+      setUnits([])
+      setStageTemplates([])
+      setUnitStagesByUnitId({})
+      setDuplicateStageWarnings([])
+      setLoading(false)
+      return
+    }
+
+    setProfile(currentProfile)
+
     const { data: p, error: pErr } = await supabase
       .from('projects')
       .select('id, name, description, client_name, city, address')
@@ -280,6 +304,7 @@ export default function ObraDetalhePage() {
       setUnits([])
       setStageTemplates([])
       setUnitStagesByUnitId({})
+      setDuplicateStageWarnings([])
       setLoading(false)
       return
     }
@@ -311,6 +336,7 @@ export default function ObraDetalhePage() {
       alert(`Erro ao carregar unidades: ${uErr.message}`)
       setUnits([])
       setUnitStagesByUnitId({})
+      setDuplicateStageWarnings([])
       setLoading(false)
       return
     }
@@ -340,8 +366,10 @@ export default function ObraDetalhePage() {
         console.error('Erro ao carregar etapas das unidades:', usErr)
         alert(`Erro ao carregar etapas das unidades: ${usErr.message}`)
         setUnitStagesByUnitId({})
+        setDuplicateStageWarnings([])
       } else {
         const grouped = {}
+        const warnings = []
         for (const row of unitStages || []) {
           const key = safeStr(row.unit_id)
           if (!grouped[key]) grouped[key] = []
@@ -350,10 +378,23 @@ export default function ObraDetalhePage() {
             unit_stage_photos: Array.isArray(row.unit_stage_photos) ? row.unit_stage_photos : [],
           })
         }
-        setUnitStagesByUnitId(grouped)
+        const normalizedGrouped = {}
+        for (const [unitId, rows] of Object.entries(grouped)) {
+          const summary = buildUnitStageDuplicateSummary(rows)
+          normalizedGrouped[unitId] = summary.rows
+          if (summary.reviewGroups.length > 0) {
+            warnings.push({
+              unitId,
+              groups: summary.reviewGroups,
+            })
+          }
+        }
+        setUnitStagesByUnitId(normalizedGrouped)
+        setDuplicateStageWarnings(warnings)
       }
     } else {
       setUnitStagesByUnitId({})
+      setDuplicateStageWarnings([])
     }
 
     setLoading(false)
@@ -368,6 +409,7 @@ export default function ObraDetalhePage() {
     () => (stageTemplates || []).filter((s) => s.is_active !== false),
     [stageTemplates]
   )
+  const isAdmin = profile?.role === 'admin'
 
   const stagesForList = useMemo(() => {
     if (showArchivedStages) return stageTemplates
@@ -485,6 +527,7 @@ export default function ObraDetalhePage() {
   }
 
   function openCreateUnitModal() {
+    if (!isAdmin) return
     setCreateUnitIdentifier('')
     setCreateUnitApplyStages(true)
     setCreateUnitOpen(true)
@@ -492,6 +535,7 @@ export default function ObraDetalhePage() {
   }
 
   async function saveCreateUnit() {
+    if (!isAdmin) return
     const identifier = safeStr(createUnitIdentifier).trim()
 
     if (!identifier) {
@@ -506,32 +550,11 @@ export default function ObraDetalhePage() {
 
     setCreateUnitBusy(true)
     try {
-      const { data: createdUnit, error: createErr } = await supabase
-        .from('units')
-        .insert({
-          project_id: projectId,
-          identifier,
-          status: 'pending',
-          progress: 0,
-          is_active: true,
-        })
-        .select('id')
-        .maybeSingle()
-
-      if (createErr || !createdUnit?.id) {
-        alert(`Erro ao criar unidade: ${createErr?.message || 'falha ao criar unidade'}`)
-        return
-      }
-
-      if (createUnitApplyStages) {
-        try {
-          await createStageRowsForUnit(createdUnit.id)
-        } catch (err) {
-          alert(`Unidade criada, mas houve erro ao aplicar etapas: ${err.message}`)
-          return
-        }
-      }
-
+      await runAdminAction('create_unit', {
+        project_id: projectId,
+        identifier,
+        apply_stages: createUnitApplyStages,
+      })
       setCreateUnitOpen(false)
       await loadData()
     } finally {
@@ -586,14 +609,11 @@ export default function ObraDetalhePage() {
   }
 
   async function deleteUnit(unitId, identifier) {
+    if (!isAdmin) return
     const ok = window.confirm(`Excluir unidade ${identifier || ''}?`)
     if (!ok) return
 
-    const { error } = await supabase.from('units').delete().eq('id', unitId)
-    if (error) {
-      alert(`Erro ao excluir unidade: ${error.message}`)
-      return
-    }
+    await runAdminAction('delete_unit', { unit_id: unitId })
 
     await loadData()
   }
@@ -618,6 +638,7 @@ export default function ObraDetalhePage() {
   }
 
   function openCopyModal(unitRow = null) {
+    if (!isAdmin) return
     setCopySourceUnitId(unitRow?.id ? safeStr(unitRow.id) : '')
     setCopySourceUnitLabel(unitRow?.identifier || '')
     setCopyNewIdentifier('')
@@ -630,6 +651,7 @@ export default function ObraDetalhePage() {
   }
 
   async function copyUnitContent() {
+    if (!isAdmin) return
     const sourceUnitId = safeStr(copySourceUnitId)
     const newIdentifier = safeStr(copyNewIdentifier).trim()
 
@@ -676,122 +698,13 @@ export default function ObraDetalhePage() {
 
     setCopyBusy(true)
     try {
-      const initialStatus = 'pending'
-
-      const { data: createdUnit, error: createUnitErr } = await supabase
-        .from('units')
-        .insert({
-          project_id: projectId,
-          identifier: newIdentifier,
-          status: initialStatus,
-          progress: 0,
-          is_active: true,
-        })
-        .select('id, identifier')
-        .maybeSingle()
-
-      if (createUnitErr || !createdUnit?.id) {
-        alert(`Erro ao criar nova unidade: ${createUnitErr?.message || 'falha ao criar unidade'}`)
-        return
-      }
-
-      const newUnitId = createdUnit.id
-      const stageIdMap = {}
-
-      if (copyStructure) {
-        const stageRowsToInsert = sourceStages.map((src) => ({
-          unit_id: newUnitId,
-          stage_id: src.stage_id || null,
-          custom_name: src.custom_name || null,
-          order_index: src.order_index ?? null,
-          is_active: src.is_active !== false,
-          status: 'pending',
-          notes: copyObservations ? safeStr(src.notes || '') : null,
-        }))
-
-        if (stageRowsToInsert.length > 0) {
-          const { data: insertedStages, error: insertStagesErr } = await supabase
-            .from('unit_stages')
-            .insert(stageRowsToInsert)
-            .select(`
-              id,
-              unit_id,
-              stage_id,
-              custom_name,
-              order_index
-            `)
-
-          if (insertStagesErr) {
-            alert(`Unidade criada, mas houve erro ao copiar etapas: ${insertStagesErr.message}`)
-            return
-          }
-
-          for (let i = 0; i < sourceStages.length; i++) {
-            const src = sourceStages[i]
-            const inserted = insertedStages?.[i]
-            if (src?.id && inserted?.id) {
-              stageIdMap[safeStr(src.id)] = inserted.id
-            }
-          }
-        }
-      }
-
-      if (copyPhotos) {
-        for (const src of sourceStages) {
-          const targetStageId = stageIdMap[safeStr(src.id)]
-          if (!targetStageId) continue
-
-          const sourcePhotos = Array.isArray(src.unit_stage_photos) ? src.unit_stage_photos : []
-          if (sourcePhotos.length === 0) continue
-
-          for (const photo of sourcePhotos) {
-            if (!photo.path) continue
-
-            const { data: fileData, error: downloadErr } = await supabase
-              .storage
-              .from(BUCKET)
-              .download(photo.path)
-
-            if (downloadErr || !fileData) {
-              alert(`Erro ao copiar foto: ${downloadErr?.message || 'falha no download'}`)
-              return
-            }
-
-            const ext = extFromPath(photo.path)
-            const newPath = `units/${newUnitId}/unit_stages/${targetStageId}/${randomId()}.${ext}`
-
-            const { error: uploadErr } = await supabase
-              .storage
-              .from(BUCKET)
-              .upload(newPath, fileData, {
-                cacheControl: '3600',
-                upsert: false,
-                contentType: fileData.type || undefined,
-              })
-
-            if (uploadErr) {
-              alert(`Erro ao subir foto copiada: ${uploadErr.message}`)
-              return
-            }
-
-            const { error: insertPhotoErr } = await supabase
-              .from('unit_stage_photos')
-              .insert({
-                unit_stage_id: targetStageId,
-                user_id: null,
-                kind: photo.kind || 'image',
-                path: newPath,
-                caption: photo.caption || '',
-              })
-
-            if (insertPhotoErr) {
-              alert(`Erro ao registrar foto copiada: ${insertPhotoErr.message}`)
-              return
-            }
-          }
-        }
-      }
-
+      await runAdminAction('copy_unit', {
+        source_unit_id: sourceUnitId,
+        new_identifier: newIdentifier,
+        copy_structure: copyStructure,
+        copy_observations: copyObservations,
+        copy_photos: copyPhotos,
+      })
       setCopyOpen(false)
       await loadData()
       alert(`Unidade ${newIdentifier} criada com sucesso.`)
@@ -809,28 +722,17 @@ export default function ObraDetalhePage() {
   }
 
   async function createStageTemplate(name) {
+    if (!isAdmin) return
     const n = safeStr(name).trim()
     if (!n) return
-
-    const nextOrder = getMaxOrderIndex() + 1
-    const payload = {
-      project_id: projectId,
-      name: n,
-      order_index: nextOrder,
-      is_active: true,
-    }
-
-    const { error } = await supabase.from('stages').insert(payload)
-    if (error) {
-      alert(`Erro ao criar etapa: ${error.message}`)
-      return
-    }
+    await runAdminAction('create_stage_template', { project_id: projectId, name: n })
 
     setNewStageName('')
     await loadData()
   }
 
   async function bulkAddStagesFromLines() {
+    if (!isAdmin) return
     const lines = safeStr(bulkStageLines)
       .split('\n')
       .map((x) => x.trim())
@@ -841,26 +743,9 @@ export default function ObraDetalhePage() {
       return
     }
 
-    const base = getMaxOrderIndex()
-    const rows = lines.map((name, idx) => ({
-      project_id: projectId,
-      name,
-      order_index: base + 1 + idx,
-      is_active: true,
-    }))
-
     setStagesBusy(true)
     try {
-      const B = 200
-      for (let i = 0; i < rows.length; i += B) {
-        const chunk = rows.slice(i, i + B)
-        const { error } = await supabase.from('stages').insert(chunk)
-        if (error) {
-          alert(`Erro ao adicionar etapas: ${error.message}`)
-          return
-        }
-      }
-
+      await runAdminAction('bulk_add_stage_templates', { project_id: projectId, lines })
       setBulkStageLines('')
       await loadData()
     } finally {
@@ -987,6 +872,7 @@ export default function ObraDetalhePage() {
   }
 
   async function applyStagesToAllExistingMissing() {
+    if (!isAdmin) return
     const ok = window.confirm(
       `Aplicar o modelo de etapas para TODAS as unidades desta obra que ainda não têm etapas?\n\nIsso não mexe nas unidades que já têm etapas.`
     )
@@ -995,7 +881,10 @@ export default function ObraDetalhePage() {
     setStagesBusy(true)
     try {
       const unitIds = (units || []).map((u) => u.id)
-      const res = await applyStagesToUnitsMissingAny(unitIds)
+      const res = await runAdminAction('apply_stages_to_units_missing_any', {
+        project_id: projectId,
+        unit_ids: unitIds,
+      })
       alert(`Aplicação concluída.\nUnidades afetadas: ${res.affectedUnits}\nRegistros criados: ${res.created}`)
       await loadData()
     } finally {
@@ -1004,6 +893,7 @@ export default function ObraDetalhePage() {
   }
 
   async function syncModelToAllUnits() {
+    if (!isAdmin) return
     const ok = window.confirm(
       `ATUALIZAR MODELO EM TODAS AS UNIDADES?\n\n` +
       `• Cria etapas faltantes em cada unidade (sem duplicar)\n` +
@@ -1025,79 +915,14 @@ export default function ObraDetalhePage() {
 
     setStagesBusy(true)
     try {
-      const { data: existing, error: exErr } = await supabase
-        .from('unit_stages')
-        .select('unit_id, stage_id')
-        .in('unit_id', unitIds)
-        .limit(1000000)
-
-      if (exErr) {
-        alert(`Erro ao ler unit_stages: ${exErr.message}`)
-        return
-      }
-
-      const existingKey = new Set((existing || []).map((r) => `${safeStr(r.unit_id)}::${safeStr(r.stage_id)}`))
-
-      const rowsToInsert = []
-      for (const uid of unitIds) {
-        for (const st of stageTemplates) {
-          const sid = st.id
-          const k = `${safeStr(uid)}::${safeStr(sid)}`
-          if (!existingKey.has(k)) {
-            rowsToInsert.push({
-              unit_id: uid,
-              stage_id: sid,
-              status: 'pending',
-              is_active: st.is_active !== false,
-              order_index: st.order_index ?? null,
-            })
-          }
-        }
-      }
-
-      const B = 500
-      for (let i = 0; i < rowsToInsert.length; i += B) {
-        const chunk = rowsToInsert.slice(i, i + B)
-        const { error: insErr } = await supabase.from('unit_stages').insert(chunk)
-        if (insErr) {
-          alert(`Erro ao criar etapas faltantes: ${insErr.message}`)
-          return
-        }
-      }
-
-      const archivedIds = stageTemplates.filter((s) => s.is_active === false).map((s) => s.id)
-      const activeIds = stageTemplates.filter((s) => s.is_active !== false).map((s) => s.id)
-
-      if (archivedIds.length > 0) {
-        const { error: aErr } = await supabase
-          .from('unit_stages')
-          .update({ is_active: false })
-          .in('unit_id', unitIds)
-          .in('stage_id', archivedIds)
-
-        if (aErr) {
-          alert(`Erro ao arquivar etapas nas unidades: ${aErr.message}`)
-          return
-        }
-      }
-
-      if (activeIds.length > 0) {
-        const { error: rErr } = await supabase
-          .from('unit_stages')
-          .update({ is_active: true })
-          .in('unit_id', unitIds)
-          .in('stage_id', activeIds)
-
-        if (rErr) {
-          alert(`Erro ao reativar etapas nas unidades: ${rErr.message}`)
-          return
-        }
-      }
-
+      const res = await runAdminAction('sync_model_to_all_units', {
+        project_id: projectId,
+        unit_ids: unitIds,
+      })
       alert(
         `Modelo atualizado!\n` +
-        `Etapas criadas (faltantes): ${rowsToInsert.length}\n` +
-        `Unidades afetadas: ${unitIds.length}`
+        `Etapas criadas (faltantes): ${res.created}\n` +
+        `Unidades afetadas: ${res.affectedUnits}`
       )
 
       await loadData()
@@ -1107,6 +932,7 @@ export default function ObraDetalhePage() {
   }
 
   async function generateUnitsByBuilding() {
+    if (!isAdmin) return
     if (!projectId) {
       alert('Projeto não encontrado.')
       return
@@ -1163,57 +989,13 @@ export default function ObraDetalhePage() {
 
     try {
       setBuildingBusy(true)
-
-      const payloadUnits = toCreate.map((identifier) => ({
+      const res = await runAdminAction('generate_units_building', {
         project_id: projectId,
-        identifier,
-        status: 'pending',
-        progress: 0,
-        is_active: true,
-      }))
-
-      const created = []
-      const BATCH = 200
-
-      for (let i = 0; i < payloadUnits.length; i += BATCH) {
-        const chunk = payloadUnits.slice(i, i + BATCH)
-        const { data, error } = await supabase.from('units').insert(chunk).select('id, identifier')
-        if (error) {
-          alert(`Erro ao criar unidades: ${error.message}`)
-          return
-        }
-        if (Array.isArray(data)) created.push(...data)
-      }
-
-      const rows = []
-      for (const u of created) {
-        for (const s of activeStages) {
-          rows.push({
-            unit_id: u.id,
-            stage_id: s.id,
-            status: 'pending',
-            is_active: true,
-            order_index: s.order_index ?? null,
-          })
-        }
-      }
-
-      const B2 = 500
-      for (let i = 0; i < rows.length; i += B2) {
-        const chunk = rows.slice(i, i + B2)
-        const { error: usErr } = await supabase.from('unit_stages').insert(chunk)
-        if (usErr) {
-          alert(`Unidades criadas, mas erro ao criar etapas: ${usErr.message}`)
-          break
-        }
-      }
-
-      if (buildingApplyStagesToExistingMissing) {
-        const allUnitIds = [...(units || []).map((u) => u.id), ...created.map((x) => x.id)]
-        await applyStagesToUnitsMissingAny(allUnitIds)
-      }
-
-      alert(`Criadas ${created.length} unidades com etapas.`)
+        identifiers: toCreate,
+        apply_existing_missing: buildingApplyStagesToExistingMissing,
+        all_unit_ids: (units || []).map((u) => u.id),
+      })
+      alert(`Criadas ${res.created} unidades com etapas.`)
       setBuildingOpen(false)
       await loadData()
     } finally {
@@ -1222,6 +1004,7 @@ export default function ObraDetalhePage() {
   }
 
   async function generateUnitsHorizontal() {
+    if (!isAdmin) return
     if (!projectId) {
       alert('Projeto não encontrado.')
       return
@@ -1274,57 +1057,13 @@ export default function ObraDetalhePage() {
 
     try {
       setHorizontalBusy(true)
-
-      const payloadUnits = toCreate.map((identifier) => ({
+      const res = await runAdminAction('generate_units_horizontal', {
         project_id: projectId,
-        identifier,
-        status: 'pending',
-        progress: 0,
-        is_active: true,
-      }))
-
-      const created = []
-      const BATCH = 200
-
-      for (let i = 0; i < payloadUnits.length; i += BATCH) {
-        const chunk = payloadUnits.slice(i, i + BATCH)
-        const { data, error } = await supabase.from('units').insert(chunk).select('id, identifier')
-        if (error) {
-          alert(`Erro ao criar unidades horizontais: ${error.message}`)
-          return
-        }
-        if (Array.isArray(data)) created.push(...data)
-      }
-
-      const rows = []
-      for (const u of created) {
-        for (const s of activeStages) {
-          rows.push({
-            unit_id: u.id,
-            stage_id: s.id,
-            status: 'pending',
-            is_active: true,
-            order_index: s.order_index ?? null,
-          })
-        }
-      }
-
-      const B2 = 500
-      for (let i = 0; i < rows.length; i += B2) {
-        const chunk = rows.slice(i, i + B2)
-        const { error: usErr } = await supabase.from('unit_stages').insert(chunk)
-        if (usErr) {
-          alert(`Unidades criadas, mas erro ao criar etapas: ${usErr.message}`)
-          break
-        }
-      }
-
-      if (horizontalApplyStagesToExistingMissing) {
-        const allUnitIds = [...(units || []).map((u) => u.id), ...created.map((x) => x.id)]
-        await applyStagesToUnitsMissingAny(allUnitIds)
-      }
-
-      alert(`Criadas ${created.length} unidades horizontais com etapas.`)
+        identifiers: toCreate,
+        apply_existing_missing: horizontalApplyStagesToExistingMissing,
+        all_unit_ids: (units || []).map((u) => u.id),
+      })
+      alert(`Criadas ${res.created} unidades horizontais com etapas.`)
       setHorizontalOpen(false)
       await loadData()
     } finally {
@@ -1397,20 +1136,22 @@ export default function ObraDetalhePage() {
             Mostrar arquivadas
           </label>
 
-          <button
-            type="button"
-            onClick={() => setStagesOpen(true)}
-            style={{
-              padding: '10px 12px',
-              borderRadius: 12,
-              border: '1px solid #ddd',
-              background: '#fff',
-              cursor: 'pointer',
-              fontWeight: 900,
-            }}
-          >
-            Etapas da obra
-          </button>
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={() => setStagesOpen(true)}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                cursor: 'pointer',
+                fontWeight: 900,
+              }}
+            >
+              Etapas da obra
+            </button>
+          ) : null}
 
           <div
             style={{ position: 'relative' }}
@@ -1418,21 +1159,22 @@ export default function ObraDetalhePage() {
           >
             <button
               type="button"
-              onClick={() => setOpenTopMenu((prev) => !prev)}
+              onClick={() => isAdmin && setOpenTopMenu((prev) => !prev)}
+              disabled={!isAdmin}
               style={{
                 padding: '10px 12px',
                 borderRadius: 12,
                 border: '1px solid #ddd',
-                background: '#111',
-                color: '#fff',
-                cursor: 'pointer',
+                background: isAdmin ? '#111' : '#f3f4f6',
+                color: isAdmin ? '#fff' : '#9ca3af',
+                cursor: isAdmin ? 'pointer' : 'not-allowed',
                 fontWeight: 900,
               }}
             >
               + Unidades
             </button>
 
-            {openTopMenu ? (
+            {isAdmin && openTopMenu ? (
               <div
                 style={{
                   position: 'absolute',
@@ -1532,6 +1274,28 @@ export default function ObraDetalhePage() {
       </div>
 
       <hr style={{ margin: '18px 0' }} />
+
+      {!isAdmin ? (
+        <div style={{ marginBottom: 16, color: '#b00020' }}>
+          Apenas administradores podem criar, copiar ou excluir obra, unidade e etapa.
+        </div>
+      ) : null}
+
+      {duplicateStageWarnings.length > 0 ? (
+        <div
+          style={{
+            marginBottom: 16,
+            color: '#92400e',
+            background: '#fffbeb',
+            border: '1px solid #fcd34d',
+            borderRadius: 12,
+            padding: 12,
+          }}
+        >
+          Foram encontradas {duplicateStageWarnings.length} unidade(s) com etapas duplicadas e dados conflitantes.
+          A lista mostra apenas a etapa mais completa; a limpeza dessas duplicatas deve ser supervisionada.
+        </div>
+      ) : null}
 
       <div style={{ maxWidth: 1100, display: 'grid', gap: 12 }}>
         <div style={{ display: 'grid', gap: 6 }}>
@@ -1709,6 +1473,7 @@ export default function ObraDetalhePage() {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation()
+                          if (!isAdmin) return
                           setOpenUnitMenuId((prev) => (prev === u.id ? null : u.id))
                         }}
                         style={{
@@ -1723,11 +1488,12 @@ export default function ObraDetalhePage() {
                           lineHeight: 1,
                         }}
                         title="Ações"
+                        disabled={!isAdmin}
                       >
                         ⋯
                       </button>
 
-                      {openUnitMenuId === u.id ? (
+                      {isAdmin && openUnitMenuId === u.id ? (
                         <div
                           style={{
                             position: 'absolute',
