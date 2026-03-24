@@ -35,6 +35,27 @@ function normalizeUnitStatus(status) {
   return 'pending'
 }
 
+function buildUnitStageCounters(stageRows) {
+  if (!Array.isArray(stageRows)) {
+    return {
+      totalActiveStages: null,
+      pendingCount: null,
+      inProgressCount: null,
+      doneCount: null,
+      notesCount: null,
+    }
+  }
+
+  const metrics = calculateUnitMetrics(stageRows)
+  return {
+    totalActiveStages: metrics.totalStages,
+    pendingCount: metrics.pendingStages,
+    inProgressCount: metrics.inProgressStages,
+    doneCount: metrics.doneStages,
+    notesCount: metrics.notesCount,
+  }
+}
+
 function formatPct(n) {
   const v = Number(n || 0)
   if (Number.isNaN(v)) return '0%'
@@ -196,6 +217,7 @@ export default function ObraDetalhePage() {
   const [project, setProject] = useState(null)
   const [units, setUnits] = useState([])
   const [unitStagesByUnitId, setUnitStagesByUnitId] = useState({})
+  const [unitStagesLoaded, setUnitStagesLoaded] = useState(false)
   const [duplicateStageWarnings, setDuplicateStageWarnings] = useState([])
 
   const [stageTemplates, setStageTemplates] = useState([])
@@ -342,6 +364,7 @@ export default function ObraDetalhePage() {
       alert(`Erro ao carregar unidades: ${uErr.message}`)
       setUnits([])
       setUnitStagesByUnitId({})
+      setUnitStagesLoaded(false)
       setDuplicateStageWarnings([])
       setLoading(false)
       return
@@ -352,6 +375,7 @@ export default function ObraDetalhePage() {
 
     const unitIds = unitList.map((x) => x.id).filter(Boolean)
     if (unitIds.length > 0) {
+      const grouped = Object.fromEntries(unitIds.map((currentUnitId) => [safeStr(currentUnitId), []]))
       const { data: unitStages, error: usErr } = await supabase
         .from('unit_stages')
         .select(`
@@ -372,9 +396,9 @@ export default function ObraDetalhePage() {
         console.error('Erro ao carregar etapas das unidades:', usErr)
         alert(`Erro ao carregar etapas das unidades: ${usErr.message}`)
         setUnitStagesByUnitId({})
+        setUnitStagesLoaded(false)
         setDuplicateStageWarnings([])
       } else {
-        const grouped = {}
         const warnings = []
         for (const row of unitStages || []) {
           const key = safeStr(row.unit_id)
@@ -396,10 +420,12 @@ export default function ObraDetalhePage() {
           }
         }
         setUnitStagesByUnitId(normalizedGrouped)
+        setUnitStagesLoaded(true)
         setDuplicateStageWarnings(warnings)
       }
     } else {
-      setUnitStagesByUnitId({})
+      setUnitStagesByUnitId(Object.fromEntries(unitList.map((currentUnit) => [safeStr(currentUnit.id), []])))
+      setUnitStagesLoaded(true)
       setDuplicateStageWarnings([])
     }
 
@@ -1378,7 +1404,9 @@ export default function ObraDetalhePage() {
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
         ) : (
           filteredUnits.map((u) => {
-            const metrics = calculateUnitMetrics(unitStagesByUnitId[safeStr(u.id)] || [])
+            const hasStageRows = Object.prototype.hasOwnProperty.call(unitStagesByUnitId, safeStr(u.id))
+            const stageRows = unitStagesLoaded && hasStageRows ? unitStagesByUnitId[safeStr(u.id)] : null
+            const stageCounters = buildUnitStageCounters(stageRows)
             const pctUnit = Math.round(clampPct(u.progress))
 
             return (
@@ -1413,7 +1441,7 @@ export default function ObraDetalhePage() {
                       }}
                       title="Status"
                     >
-                      {STATUS_PT[metrics.generalStatus] || '—'}
+                      {STATUS_PT[normalizeUnitStatus(u.status)] || '—'}
                     </span>
 
                     {u.is_active === false ? (
@@ -1566,11 +1594,16 @@ export default function ObraDetalhePage() {
                 <div style={{ display: 'grid', gap: 8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', fontSize: 13, color: '#444' }}>
                     <span>
-                      Etapas: <b>{metrics.doneStages}/{metrics.totalStages}</b>
+                      Etapas:{' '}
+                      <b>
+                        {stageCounters.doneCount === null || stageCounters.totalActiveStages === null
+                          ? '--/--'
+                          : `${stageCounters.doneCount}/${stageCounters.totalActiveStages}`}
+                      </b>
                     </span>
 
                     <span>
-                      Observações: <b>{metrics.notesCount}</b>
+                      Observações: <b>{stageCounters.notesCount ?? '--'}</b>
                     </span>
                   </div>
 
@@ -1588,17 +1621,17 @@ export default function ObraDetalhePage() {
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(100px, 1fr))', gap: 10 }}>
                     <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>pendentes</div>
-                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.pendingStages}</div>
+                      <div style={{ fontSize: 18, fontWeight: 900 }}>{stageCounters.pendingCount ?? '--'}</div>
                     </div>
 
                     <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>em andamento</div>
-                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.inProgressStages}</div>
+                      <div style={{ fontSize: 18, fontWeight: 900 }}>{stageCounters.inProgressCount ?? '--'}</div>
                     </div>
 
                     <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 10 }}>
                       <div style={{ fontSize: 12, color: '#666' }}>concluídas</div>
-                      <div style={{ fontSize: 18, fontWeight: 900 }}>{metrics.doneStages}</div>
+                      <div style={{ fontSize: 18, fontWeight: 900 }}>{stageCounters.doneCount ?? '--'}</div>
                     </div>
                   </div>
                 </div>
