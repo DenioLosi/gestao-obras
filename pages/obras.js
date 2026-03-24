@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '../lib/supabase'
 import { runAdminAction } from '../lib/admin-api'
+import { calculateUnitMetrics } from '../lib/unit-progress'
 
 const STATUS_LABEL = {
   pending: 'pendente',
@@ -147,6 +148,7 @@ export default function ObrasPainelPage() {
   const [userEmail, setUserEmail] = useState('')
   const [profile, setProfile] = useState(null)
   const [projects, setProjects] = useState([])
+  const [unitMetricsById, setUnitMetricsById] = useState({})
 
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('progress_desc')
@@ -168,6 +170,7 @@ export default function ObrasPainelPage() {
   const [formAddress, setFormAddress] = useState('')
 
   const [openMenuProjectId, setOpenMenuProjectId] = useState(null)
+  const [recalcAllBusy, setRecalcAllBusy] = useState(false)
 
   useEffect(() => {
     function closeMenus() {
@@ -241,11 +244,13 @@ export default function ObrasPainelPage() {
         return
       }
 
-      setProjects((data || []).map((x) => ({
+      const normalizedProjects = (data || []).map((x) => ({
         ...x,
         is_active: x.is_active !== false,
         units: Array.isArray(x.units) ? x.units : [],
-      })))
+      }))
+      setProjects(normalizedProjects)
+      await loadUnitMetrics(normalizedProjects)
       setLoading(false)
       return
     }
@@ -284,12 +289,53 @@ export default function ObrasPainelPage() {
       return
     }
 
-    setProjects((data2 || []).map((x) => ({
+    const normalizedProjects = (data2 || []).map((x) => ({
       ...x,
       is_active: x.is_active !== false,
       units: Array.isArray(x.units) ? x.units : [],
-    })))
+    }))
+    setProjects(normalizedProjects)
+    await loadUnitMetrics(normalizedProjects)
     setLoading(false)
+  }
+
+  async function loadUnitMetrics(projectRows) {
+    const unitIds = (projectRows || []).flatMap((project) => (project.units || []).map((unit) => unit.id)).filter(Boolean)
+    if (unitIds.length === 0) {
+      setUnitMetricsById({})
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('unit_stages')
+      .select('id, unit_id, stage_id, status, notes, started_at, due_date, order_index, is_active')
+      .in('unit_id', unitIds)
+      .limit(1000000)
+
+    if (error) {
+      alert(`Erro ao carregar métricas das unidades: ${error.message}`)
+      setUnitMetricsById({})
+      return
+    }
+
+    const grouped = {}
+    for (const row of data || []) {
+      const key = safeStr(row.unit_id)
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push(row)
+    }
+
+    const nextMetrics = {}
+    for (const project of projectRows || []) {
+      for (const unit of project.units || []) {
+        nextMetrics[unit.id] = calculateUnitMetrics(grouped[safeStr(unit.id)] || [], {
+          progress: unit.progress,
+          status: unit.status,
+        })
+      }
+    }
+
+    setUnitMetricsById(nextMetrics)
   }
 
   useEffect(() => {
@@ -305,10 +351,11 @@ export default function ObrasPainelPage() {
       let sumProgress = 0
 
       for (const u of p.units || []) {
-        const st = u.status || 'pending'
+        const metrics = unitMetricsById[u.id]
+        const st = metrics?.generalStatus || u.status || 'pending'
         if (counts[st] === undefined) counts[st] = 0
         counts[st] += 1
-        sumProgress += clampPct(u.progress)
+        sumProgress += clampPct(metrics?.progressPct ?? u.progress)
       }
 
       const avg = total > 0 ? sumProgress / total : 0
@@ -327,7 +374,39 @@ export default function ObrasPainelPage() {
         is_active: p.is_active !== false,
       }
     })
-  }, [projects, showArchived])
+  }, [projects, showArchived, unitMetricsById])
+
+  async function recalculateAllUnits() {
+    if (!isAdmin) return
+
+    try {
+      setRecalcAllBusy(true)
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+      if (sessionError) throw sessionError
+
+      const response = await fetch('/api/units/recalculate-all', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionData?.session?.access_token
+            ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+            : {}),
+        },
+      })
+
+      const json = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(json?.error || 'Falha ao recalcular unidades.')
+      }
+
+      await loadData()
+      alert(`Recalculo concluído.\nUnidades atualizadas: ${json.updated || 0}`)
+    } catch (error) {
+      alert(`Erro ao recalcular unidades: ${error.message}`)
+    } finally {
+      setRecalcAllBusy(false)
+    }
+  }
 
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -812,6 +891,26 @@ export default function ObrasPainelPage() {
               }}
             >
               + Nova obra
+            </button>
+          ) : null}
+
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={recalculateAllUnits}
+              disabled={recalcAllBusy}
+              style={{
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #ddd',
+                background: '#fff',
+                color: '#111',
+                cursor: recalcAllBusy ? 'not-allowed' : 'pointer',
+                fontWeight: 800,
+                height: 'fit-content',
+              }}
+            >
+              {recalcAllBusy ? 'Recalculando…' : 'Recalcular unidades'}
             </button>
           ) : null}
         </div>

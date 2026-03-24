@@ -5,7 +5,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "dedupe:unit-stages": "node scripts/dedupe-unit-stages.js"
+    "dedupe:unit-stages": "node scripts/dedupe-unit-stages.js",
+    "recalc:all-units": "node scripts/recalculate-all-units.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",
