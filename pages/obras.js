@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '../lib/supabase'
 import { runAdminAction } from '../lib/admin-api'
-import { applyUnitMetrics, calculateProjectMetrics } from '../lib/unit-progress'
 
 const STATUS_LABEL = {
   pending: 'pendente',
@@ -148,7 +147,6 @@ export default function ObrasPainelPage() {
   const [userEmail, setUserEmail] = useState('')
   const [profile, setProfile] = useState(null)
   const [projects, setProjects] = useState([])
-  const [unitStagesByUnitId, setUnitStagesByUnitId] = useState({})
 
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('progress_desc')
@@ -179,55 +177,41 @@ export default function ObrasPainelPage() {
     return () => window.removeEventListener('click', closeMenus)
   }, [])
 
-  async function setProjectsWithUnitStages(projectRows) {
-    const normalizedProjects = (projectRows || []).map((x) => ({
+  function setNormalizedProjects(projectRows) {
+    setProjects((projectRows || []).map((x) => ({
       ...x,
       is_active: x.is_active !== false,
-      units: Array.isArray(x.units) ? x.units : [],
-    }))
+      units: (Array.isArray(x.units) ? x.units : []).map((unit) => ({
+        ...unit,
+        is_active: unit?.is_active !== false,
+      })),
+    })))
+  }
 
-    setProjects(normalizedProjects)
+  async function recalculateUnitsAndProjects(unitIds) {
+    const uniqueUnitIds = [...new Set((Array.isArray(unitIds) ? unitIds : []).map((value) => safeStr(value).trim()).filter(Boolean))]
+    if (uniqueUnitIds.length === 0) return null
 
-    const unitIds = normalizedProjects.flatMap((project) => (project.units || []).map((unit) => unit.id)).filter(Boolean)
-    if (unitIds.length === 0) {
-      setUnitStagesByUnitId({})
-      return
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    if (sessionError) throw sessionError
+
+    const response = await fetch('/api/units/recalculate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(sessionData?.session?.access_token
+          ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+          : {}),
+      },
+      body: JSON.stringify({ unit_ids: uniqueUnitIds }),
+    })
+
+    const json = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(json?.error || 'Nao foi possivel recalcular progresso e status.')
     }
 
-    const { data: unitStages, error: unitStagesError } = await supabase
-      .from('unit_stages')
-      .select(`
-        id,
-        unit_id,
-        stage_id,
-        status,
-        is_active,
-        notes,
-        custom_name,
-        order_index,
-        unit_stage_photos ( id )
-      `)
-      .in('unit_id', unitIds)
-      .limit(1000000)
-
-    if (unitStagesError) {
-      console.error('Erro ao carregar etapas das unidades:', unitStagesError)
-      alert(`Erro ao carregar etapas das unidades: ${unitStagesError.message}`)
-      setUnitStagesByUnitId({})
-      return
-    }
-
-    const grouped = {}
-    for (const row of unitStages || []) {
-      const key = safeStr(row.unit_id)
-      if (!grouped[key]) grouped[key] = []
-      grouped[key].push({
-        ...row,
-        unit_stage_photos: Array.isArray(row.unit_stage_photos) ? row.unit_stage_photos : [],
-      })
-    }
-
-    setUnitStagesByUnitId(grouped)
+    return json
   }
 
   async function loadData() {
@@ -271,11 +255,14 @@ export default function ObrasPainelPage() {
       created_at,
       tenant_id,
       is_active,
+      progress,
+      status,
       units (
         id,
         identifier,
         status,
-        progress
+        progress,
+        is_active
       )
     `
 
@@ -290,12 +277,11 @@ export default function ObrasPainelPage() {
         console.error('Erro ao carregar projects:', error)
         alert(`Erro ao carregar obras: ${error.message}`)
         setProjects([])
-        setUnitStagesByUnitId({})
         setLoading(false)
         return
       }
 
-      await setProjectsWithUnitStages(data || [])
+      setNormalizedProjects(data || [])
       setLoading(false)
       return
     }
@@ -309,7 +295,6 @@ export default function ObrasPainelPage() {
     if (memErr) {
       alert(`Erro ao carregar acessos: ${memErr.message}`)
       setProjects([])
-      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
@@ -317,7 +302,6 @@ export default function ObrasPainelPage() {
     const ids = (mem || []).map((r) => r.project_id).filter(Boolean)
     if (ids.length === 0) {
       setProjects([])
-      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
@@ -332,12 +316,11 @@ export default function ObrasPainelPage() {
     if (prjErr) {
       alert(`Erro ao carregar obras: ${prjErr.message}`)
       setProjects([])
-      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
 
-    await setProjectsWithUnitStages(data2 || [])
+    setNormalizedProjects(data2 || [])
     setLoading(false)
   }
 
@@ -349,10 +332,14 @@ export default function ObrasPainelPage() {
     const base = showArchived ? projects : projects.filter((p) => p.is_active !== false)
 
     return base.map((p) => {
-      const unitsWithMetrics = (p.units || []).map((unit) =>
-        applyUnitMetrics(unit, unitStagesByUnitId[safeStr(unit.id)] || [])
-      )
-      const metrics = calculateProjectMetrics(unitsWithMetrics)
+      const activeUnits = (p.units || []).filter((unit) => unit.is_active !== false)
+      const counts = { pending: 0, in_progress: 0, done: 0 }
+
+      for (const unit of activeUnits) {
+        const status = safeStr(unit.status).trim() || 'pending'
+        if (counts[status] === undefined) counts.pending += 1
+        else counts[status] += 1
+      }
 
       return {
         id: p.id,
@@ -362,14 +349,14 @@ export default function ObrasPainelPage() {
         city: p.city || '',
         address: p.address || '',
         created_at: p.created_at || null,
-        totalUnits: metrics.totalUnits,
-        avgProgress: metrics.progressPct,
-        counts: metrics.counts,
-        status: metrics.generalStatus,
+        totalUnits: activeUnits.length,
+        avgProgress: clampPct(p.progress),
+        counts,
+        status: safeStr(p.status).trim() || 'pending',
         is_active: p.is_active !== false,
       }
     })
-  }, [projects, showArchived, unitStagesByUnitId])
+  }, [projects, showArchived])
 
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -679,13 +666,20 @@ export default function ObrasPainelPage() {
       }
 
       let updated = 0
+      const touchedUnitIds = new Set()
       for (const update of updatesByUnitStageId.values()) {
         const { error } = await supabase.from('unit_stages').update({ status: update.status }).eq('id', update.id)
         if (error) {
           errors.push(`Erro ao atualizar registro ${update.id}: ${error.message}`)
           continue
         }
+        const touchedRow = unitStagesData?.find((row) => safeStr(row.id) === safeStr(update.id))
+        if (touchedRow?.unit_id) touchedUnitIds.add(touchedRow.unit_id)
         updated += 1
+      }
+
+      if (touchedUnitIds.size > 0) {
+        await recalculateUnitsAndProjects([...touchedUnitIds])
       }
 
       const summary = {

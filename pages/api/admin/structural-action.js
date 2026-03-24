@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { calculateUnitMetrics } from '../../../lib/unit-progress'
+import { recalculateProjectProgress, recalculateUnitAndProjectProgress, recalculateUnitsAndProjects } from '../../../lib/progress-recalc'
 
 const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -145,17 +145,16 @@ async function getUnitStages(unitId) {
   return Array.isArray(data) ? data : []
 }
 
-async function recalculateUnitProgress(unitId) {
-  const stageRows = await getUnitStages(unitId)
-  const metrics = calculateUnitMetrics(stageRows || [])
-  const patch = {
-    progress: Math.round(metrics.progressPct * 100) / 100,
-    status: metrics.generalStatus,
-  }
+async function recalculateProject(projectId) {
+  return recalculateProjectProgress(supabaseAdmin, projectId)
+}
 
-  const { error } = await supabaseAdmin.from('units').update(patch).eq('id', unitId)
-  if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
-  return patch
+async function recalculateUnit(unitId) {
+  return recalculateUnitAndProjectProgress(supabaseAdmin, unitId)
+}
+
+async function recalculateManyUnits(unitIds) {
+  return recalculateUnitsAndProjects(supabaseAdmin, unitIds)
 }
 
 async function insertUnitStagesAvoidingDuplicates(rows) {
@@ -283,14 +282,16 @@ async function handleCreateUnit(body, profile) {
   const project = await getProjectOrThrow(body.project_id, profile.tenant_id)
   const activeStages = body.apply_stages ? (await getProjectStages(project.id)).filter((stage) => stage.is_active !== false) : []
   const createdUnit = await createUnitWithStages(project.id, safeStr(body.identifier).trim(), activeStages)
-  return { unit: createdUnit }
+  const recalculated = await recalculateUnit(createdUnit.id)
+  return { unit: createdUnit, progress: recalculated }
 }
 
 async function handleDeleteUnit(body, profile) {
-  const { unit } = await getUnitOrThrow(body.unit_id, profile.tenant_id)
+  const { unit, project } = await getUnitOrThrow(body.unit_id, profile.tenant_id)
   const { error } = await supabaseAdmin.from('units').delete().eq('id', unit.id)
   if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
-  return { deleted: true, unitId: unit.id }
+  const projectProgress = await recalculateProject(project.id)
+  return { deleted: true, unitId: unit.id, project: projectProgress }
 }
 
 async function handleCopyUnit(body, profile) {
@@ -367,7 +368,8 @@ async function handleCopyUnit(body, profile) {
     }
   }
 
-  return { unit: createdUnit }
+  const recalculated = await recalculateUnit(createdUnit.id)
+  return { unit: createdUnit, progress: recalculated }
 }
 
 async function handleCreateStageTemplate(body, profile) {
@@ -452,7 +454,8 @@ async function handleApplyStagesToUnitsMissingAny(body, profile) {
   }
 
   const inserted = await insertUnitStagesAvoidingDuplicates(rows)
-  return { created: inserted.length, affectedUnits: missingUnitIds.length }
+  const recalculated = missingUnitIds.length > 0 ? await recalculateManyUnits(missingUnitIds) : { units: [], projects: [] }
+  return { created: inserted.length, affectedUnits: missingUnitIds.length, progress: recalculated }
 }
 
 async function handleSyncModelToAllUnits(body, profile) {
@@ -488,7 +491,8 @@ async function handleSyncModelToAllUnits(body, profile) {
     if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
   }
 
-  return { created: inserted.length, affectedUnits: unitIds.length }
+  const recalculated = unitIds.length > 0 ? await recalculateManyUnits(unitIds) : { units: [], projects: [] }
+  return { created: inserted.length, affectedUnits: unitIds.length, progress: recalculated }
 }
 
 async function handleGenerateUnits(body, profile, mode) {
@@ -546,7 +550,11 @@ async function handleGenerateUnits(body, profile, mode) {
     )
   }
 
-  return { created: createdUnits.length, mode }
+  const recalculated = createdUnits.length > 0
+    ? await recalculateManyUnits(createdUnits.map((unit) => unit.id))
+    : { units: [], projects: [] }
+  const projectProgress = await recalculateProject(project.id)
+  return { created: createdUnits.length, mode, progress: recalculated, project: projectProgress }
 }
 
 async function handleAddExistingStageToUnit(body, profile) {
@@ -560,7 +568,8 @@ async function handleAddExistingStageToUnit(body, profile) {
   }
 
   const inserted = await insertUnitStagesAvoidingDuplicates([payload])
-  return { created: inserted.length }
+  const recalculated = await recalculateUnit(unit.id)
+  return { created: inserted.length, progress: recalculated }
 }
 
 async function handleCreateStageTemplateAndAddToUnit(body, profile) {
@@ -586,7 +595,8 @@ async function handleCreateStageTemplateAndAddToUnit(body, profile) {
     },
   ])
 
-  return { stage: stageResult.stage }
+  const recalculated = await recalculateUnit(unit.id)
+  return { stage: stageResult.stage, progress: recalculated }
 }
 
 async function handleDeleteUnitStage(body, profile) {
@@ -605,7 +615,8 @@ async function handleDeleteUnitStage(body, profile) {
 
   const { error } = await supabaseAdmin.from('unit_stages').delete().eq('id', unitStageId)
   if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
-  return { deleted: true }
+  const recalculated = await recalculateUnit(stageRow.unit_id)
+  return { deleted: true, progress: recalculated }
 }
 
 async function handleCopyUnitStage(body, profile) {
@@ -658,7 +669,8 @@ async function handleCopyUnitStage(body, profile) {
     }
   }
 
-  return { stage: newStage }
+  const recalculated = await recalculateUnit(unit.id)
+  return { stage: newStage, progress: recalculated }
 }
 
 async function handleCreateIssue(body, profile) {
@@ -710,8 +722,8 @@ async function handleCreateIssue(body, profile) {
     stageReopened = true
   }
 
-  const unitPatch = await recalculateUnitProgress(unit.id)
-  return { issue: data || null, stageReopened, unit: unitPatch }
+  const recalculated = await recalculateUnit(unit.id)
+  return { issue: data || null, stageReopened, progress: recalculated, unit: recalculated?.unit || null, project: recalculated?.project || null }
 }
 
 async function handleDeleteIssue(body, profile) {
@@ -727,7 +739,8 @@ async function handleDeleteIssue(body, profile) {
 
   const { error } = await supabaseAdmin.from('issues').delete().eq('id', issueId)
   if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
-  return { deleted: true }
+  const recalculated = await recalculateUnit(issue.unit_id)
+  return { deleted: true, progress: recalculated, unit: recalculated?.unit || null, project: recalculated?.project || null }
 }
 
 export default async function handler(req, res) {

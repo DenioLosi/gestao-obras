@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { calculateUnitMetrics } from '../../../lib/unit-progress'
+import { recalculateProjectProgress, recalculateUnitsAndProjects } from '../../../lib/progress-recalc'
 
 const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -82,29 +82,35 @@ export default async function handler(req, res) {
 
   try {
     const { profile } = await requireUser(req)
-    const unitId = safeStr(req.body?.unit_id).trim()
-    if (!unitId) throw Object.assign(new Error('unit_id e obrigatorio.'), { statusCode: 400 })
+    const unitIds = [
+      safeStr(req.body?.unit_id).trim(),
+      ...(Array.isArray(req.body?.unit_ids) ? req.body.unit_ids.map((value) => safeStr(value).trim()) : []),
+    ].filter(Boolean)
 
-    await ensureUnitAccess(unitId, profile)
+    const uniqueUnitIds = [...new Set(unitIds)]
+    if (uniqueUnitIds.length === 0) throw Object.assign(new Error('unit_id ou unit_ids e obrigatorio.'), { statusCode: 400 })
 
-    const { data: stageRows, error: stageError } = await supabaseAdmin
-      .from('unit_stages')
-      .select('id, unit_id, stage_id, status, notes, started_at, due_date, order_index, is_active')
-      .eq('unit_id', unitId)
-      .limit(1000000)
-
-    if (stageError) throw Object.assign(new Error(stageError.message), { statusCode: 400 })
-
-    const metrics = calculateUnitMetrics(stageRows || [])
-    const patch = {
-      progress: Math.round(metrics.progressPct * 100) / 100,
-      status: metrics.generalStatus,
+    const touchedProjectIds = new Set()
+    for (const unitId of uniqueUnitIds) {
+      const unit = await ensureUnitAccess(unitId, profile)
+      if (unit?.project_id) touchedProjectIds.add(safeStr(unit.project_id))
     }
 
-    const { error: updateError } = await supabaseAdmin.from('units').update(patch).eq('id', unitId)
-    if (updateError) throw Object.assign(new Error(updateError.message), { statusCode: 400 })
+    const recalculated = await recalculateUnitsAndProjects(supabaseAdmin, uniqueUnitIds)
+    for (const projectId of touchedProjectIds) {
+      if (!(recalculated.projects || []).some((project) => safeStr(project?.project_id) === projectId)) {
+        const project = await recalculateProjectProgress(supabaseAdmin, projectId)
+        if (project) recalculated.projects.push(project)
+      }
+    }
 
-    return res.status(200).json({ success: true, unit: patch })
+    return res.status(200).json({
+      success: true,
+      unit: recalculated.units[0] || null,
+      project: recalculated.projects[0] || null,
+      units: recalculated.units,
+      projects: recalculated.projects,
+    })
   } catch (error) {
     return res.status(error?.statusCode || 500).json({
       error: error?.message || 'Erro interno no servidor',

@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
 import { runAdminAction } from '../../lib/admin-api'
-import { applyUnitMetrics, calculateProjectMetrics, calculateUnitMetrics } from '../../lib/unit-progress'
+import { calculateUnitMetrics } from '../../lib/unit-progress'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -27,6 +27,12 @@ function clampPct(n) {
   const v = Number(n || 0)
   if (Number.isNaN(v)) return 0
   return Math.max(0, Math.min(100, v))
+}
+
+function normalizeUnitStatus(status) {
+  const value = safeStr(status).trim()
+  if (value === 'pending' || value === 'in_progress' || value === 'done') return value
+  return 'pending'
 }
 
 function formatPct(n) {
@@ -294,7 +300,7 @@ export default function ObraDetalhePage() {
 
     const { data: p, error: pErr } = await supabase
       .from('projects')
-      .select('id, name, description, client_name, city, address')
+      .select('id, name, description, client_name, city, address, progress, status')
       .eq('id', projectId)
       .maybeSingle()
 
@@ -417,22 +423,30 @@ export default function ObraDetalhePage() {
   }, [stageTemplates, showArchivedStages])
 
   const unitsWithMetrics = useMemo(() => {
-    return units.map((unit) => applyUnitMetrics(unit, unitStagesByUnitId[safeStr(unit.id)] || []))
-  }, [units, unitStagesByUnitId])
+    return units.map((unit) => ({
+      ...unit,
+      progress: clampPct(unit.progress),
+      status: normalizeUnitStatus(unit.status),
+    }))
+  }, [units])
 
   const visibleUnits = useMemo(() => {
     return showArchivedUnits ? unitsWithMetrics : unitsWithMetrics.filter((u) => u.is_active !== false)
   }, [unitsWithMetrics, showArchivedUnits])
 
   const stats = useMemo(() => {
-    const metrics = calculateProjectMetrics(visibleUnits)
-    return {
-      counts: metrics.counts,
-      total: metrics.totalUnits,
-      avg: metrics.progressPct,
-      status: metrics.generalStatus,
+    const counts = { pending: 0, in_progress: 0, done: 0 }
+    for (const unit of visibleUnits) {
+      counts[unit.status] += 1
     }
-  }, [visibleUnits])
+
+    return {
+      counts,
+      total: visibleUnits.length,
+      avg: clampPct(project?.progress),
+      status: normalizeUnitStatus(project?.status),
+    }
+  }, [project, visibleUnits])
 
   const filteredUnits = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -1364,11 +1378,8 @@ export default function ObraDetalhePage() {
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
         ) : (
           filteredUnits.map((u) => {
-            const metrics = u.stageMetrics || calculateUnitMetrics(unitStagesByUnitId[safeStr(u.id)] || [], {
-              progress: u.progress,
-              status: u.status,
-            })
-            const pctUnit = Math.round(metrics.progressPct)
+            const metrics = calculateUnitMetrics(unitStagesByUnitId[safeStr(u.id)] || [])
+            const pctUnit = Math.round(clampPct(u.progress))
 
             return (
               <div
@@ -1566,7 +1577,7 @@ export default function ObraDetalhePage() {
                   <div style={{ display: 'grid', gap: 6 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#444' }}>
                       <span>Progresso</span>
-                      <b>{formatPct(metrics.progressPct)}</b>
+                      <b>{formatPct(u.progress)}</b>
                     </div>
 
                     <div style={{ height: 10, background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
