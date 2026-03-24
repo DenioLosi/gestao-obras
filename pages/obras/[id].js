@@ -23,6 +23,10 @@ function safeStr(v) {
   return (v ?? '').toString()
 }
 
+function normalizeUnitMapKey(value) {
+  return safeStr(value).trim().toLowerCase()
+}
+
 function clampPct(n) {
   const v = Number(n || 0)
   if (Number.isNaN(v)) return 0
@@ -375,7 +379,7 @@ export default function ObraDetalhePage() {
 
     const unitIds = unitList.map((x) => x.id).filter(Boolean)
     if (unitIds.length > 0) {
-      const grouped = Object.fromEntries(unitIds.map((currentUnitId) => [safeStr(currentUnitId), []]))
+      const grouped = Object.fromEntries(unitIds.map((currentUnitId) => [normalizeUnitMapKey(currentUnitId), []]))
       const { data: unitStages, error: usErr } = await supabase
         .from('unit_stages')
         .select(`
@@ -401,7 +405,7 @@ export default function ObraDetalhePage() {
       } else {
         const warnings = []
         for (const row of unitStages || []) {
-          const key = safeStr(row.unit_id)
+          const key = normalizeUnitMapKey(row.unit_id)
           if (!grouped[key]) grouped[key] = []
           grouped[key].push({
             ...row,
@@ -424,7 +428,7 @@ export default function ObraDetalhePage() {
         setDuplicateStageWarnings(warnings)
       }
     } else {
-      setUnitStagesByUnitId(Object.fromEntries(unitList.map((currentUnit) => [safeStr(currentUnit.id), []])))
+      setUnitStagesByUnitId(Object.fromEntries(unitList.map((currentUnit) => [normalizeUnitMapKey(currentUnit.id), []])))
       setUnitStagesLoaded(true)
       setDuplicateStageWarnings([])
     }
@@ -582,7 +586,7 @@ export default function ObraDetalhePage() {
 
     const existsAnother = units.some(
       (u) =>
-        safeStr(u.id) !== safeStr(editUnitId) &&
+        normalizeUnitMapKey(u.id) !== normalizeUnitMapKey(editUnitId) &&
         safeStr(u.identifier).trim().toLowerCase() === identifier.toLowerCase()
     )
 
@@ -682,13 +686,13 @@ export default function ObraDetalhePage() {
       return
     }
 
-    const sourceUnit = units.find((u) => safeStr(u.id) === sourceUnitId)
+    const sourceUnit = units.find((u) => normalizeUnitMapKey(u.id) === normalizeUnitMapKey(sourceUnitId))
     if (!sourceUnit) {
       alert('Unidade de origem não encontrada.')
       return
     }
 
-    const sourceStages = (unitStagesByUnitId[sourceUnitId] || [])
+    const sourceStages = (unitStagesByUnitId[normalizeUnitMapKey(sourceUnitId)] || [])
       .filter((r) => r.is_active !== false)
       .slice()
       .sort((a, b) => Number(a.order_index || 0) - Number(b.order_index || 0))
@@ -1420,8 +1424,9 @@ export default function ObraDetalhePage() {
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
         ) : (
           filteredUnits.map((u) => {
-            const hasStageRows = Object.prototype.hasOwnProperty.call(unitStagesByUnitId, safeStr(u.id))
-            const stageRows = unitStagesLoaded && hasStageRows ? unitStagesByUnitId[safeStr(u.id)] : null
+            const unitKey = normalizeUnitMapKey(u.id)
+            const hasStageRows = Object.prototype.hasOwnProperty.call(unitStagesByUnitId, unitKey)
+            const stageRows = unitStagesLoaded && hasStageRows ? unitStagesByUnitId[unitKey] : null
             const stageCounters = buildUnitStageCounters(stageRows)
             const pctUnit = Math.round(clampPct(u.progress))
 
@@ -1465,6 +1470,21 @@ export default function ObraDetalhePage() {
                         (Arquivada)
                       </span>
                     ) : null}
+                  </div>
+
+                  <div
+                    style={{
+                      width: '100%',
+                      fontSize: 11,
+                      color: '#92400e',
+                      background: '#fffbeb',
+                      border: '1px solid #fcd34d',
+                      borderRadius: 10,
+                      padding: '8px 10px',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    DEBUG_UNIT: id={safeStr(u.id) || '—'} | identifier={safeStr(u.identifier) || '—'} | status={safeStr(u.status) || '—'} | progress={clampPct(u.progress)} | mapped={Array.isArray(stageRows) ? stageRows.length : 'null'} | done={stageCounters.doneCount ?? '--'} | pending={stageCounters.pendingCount ?? '--'} | in_progress={stageCounters.inProgressCount ?? '--'} | total={stageCounters.totalActiveStages ?? '--'}
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1788,7 +1808,7 @@ export default function ObraDetalhePage() {
               onChange={(e) => {
                 const unitId = e.target.value
                 setCopySourceUnitId(unitId)
-                const unitRow = units.find((u) => safeStr(u.id) === safeStr(unitId))
+                const unitRow = units.find((u) => normalizeUnitMapKey(u.id) === normalizeUnitMapKey(unitId))
                 setCopySourceUnitLabel(unitRow?.identifier || '')
               }}
               disabled={copyBusy}
