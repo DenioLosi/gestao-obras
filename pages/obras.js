@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '../lib/supabase'
 import { runAdminAction } from '../lib/admin-api'
+import { applyUnitMetrics, calculateProjectMetrics } from '../lib/unit-progress'
 
 const STATUS_LABEL = {
   pending: 'pendente',
@@ -147,6 +148,7 @@ export default function ObrasPainelPage() {
   const [userEmail, setUserEmail] = useState('')
   const [profile, setProfile] = useState(null)
   const [projects, setProjects] = useState([])
+  const [unitStagesByUnitId, setUnitStagesByUnitId] = useState({})
 
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('progress_desc')
@@ -176,6 +178,57 @@ export default function ObrasPainelPage() {
     window.addEventListener('click', closeMenus)
     return () => window.removeEventListener('click', closeMenus)
   }, [])
+
+  async function setProjectsWithUnitStages(projectRows) {
+    const normalizedProjects = (projectRows || []).map((x) => ({
+      ...x,
+      is_active: x.is_active !== false,
+      units: Array.isArray(x.units) ? x.units : [],
+    }))
+
+    setProjects(normalizedProjects)
+
+    const unitIds = normalizedProjects.flatMap((project) => (project.units || []).map((unit) => unit.id)).filter(Boolean)
+    if (unitIds.length === 0) {
+      setUnitStagesByUnitId({})
+      return
+    }
+
+    const { data: unitStages, error: unitStagesError } = await supabase
+      .from('unit_stages')
+      .select(`
+        id,
+        unit_id,
+        stage_id,
+        status,
+        is_active,
+        notes,
+        custom_name,
+        order_index,
+        unit_stage_photos ( id )
+      `)
+      .in('unit_id', unitIds)
+      .limit(1000000)
+
+    if (unitStagesError) {
+      console.error('Erro ao carregar etapas das unidades:', unitStagesError)
+      alert(`Erro ao carregar etapas das unidades: ${unitStagesError.message}`)
+      setUnitStagesByUnitId({})
+      return
+    }
+
+    const grouped = {}
+    for (const row of unitStages || []) {
+      const key = safeStr(row.unit_id)
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push({
+        ...row,
+        unit_stage_photos: Array.isArray(row.unit_stage_photos) ? row.unit_stage_photos : [],
+      })
+    }
+
+    setUnitStagesByUnitId(grouped)
+  }
 
   async function loadData() {
     setLoading(true)
@@ -237,15 +290,12 @@ export default function ObrasPainelPage() {
         console.error('Erro ao carregar projects:', error)
         alert(`Erro ao carregar obras: ${error.message}`)
         setProjects([])
+        setUnitStagesByUnitId({})
         setLoading(false)
         return
       }
 
-      setProjects((data || []).map((x) => ({
-        ...x,
-        is_active: x.is_active !== false,
-        units: Array.isArray(x.units) ? x.units : [],
-      })))
+      await setProjectsWithUnitStages(data || [])
       setLoading(false)
       return
     }
@@ -259,6 +309,7 @@ export default function ObrasPainelPage() {
     if (memErr) {
       alert(`Erro ao carregar acessos: ${memErr.message}`)
       setProjects([])
+      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
@@ -266,6 +317,7 @@ export default function ObrasPainelPage() {
     const ids = (mem || []).map((r) => r.project_id).filter(Boolean)
     if (ids.length === 0) {
       setProjects([])
+      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
@@ -280,15 +332,12 @@ export default function ObrasPainelPage() {
     if (prjErr) {
       alert(`Erro ao carregar obras: ${prjErr.message}`)
       setProjects([])
+      setUnitStagesByUnitId({})
       setLoading(false)
       return
     }
 
-    setProjects((data2 || []).map((x) => ({
-      ...x,
-      is_active: x.is_active !== false,
-      units: Array.isArray(x.units) ? x.units : [],
-    })))
+    await setProjectsWithUnitStages(data2 || [])
     setLoading(false)
   }
 
@@ -300,18 +349,10 @@ export default function ObrasPainelPage() {
     const base = showArchived ? projects : projects.filter((p) => p.is_active !== false)
 
     return base.map((p) => {
-      const total = (p.units || []).length
-      const counts = { pending: 0, in_progress: 0, done: 0 }
-      let sumProgress = 0
-
-      for (const u of p.units || []) {
-        const st = u.status || 'pending'
-        if (counts[st] === undefined) counts[st] = 0
-        counts[st] += 1
-        sumProgress += clampPct(u.progress)
-      }
-
-      const avg = total > 0 ? sumProgress / total : 0
+      const unitsWithMetrics = (p.units || []).map((unit) =>
+        applyUnitMetrics(unit, unitStagesByUnitId[safeStr(unit.id)] || [])
+      )
+      const metrics = calculateProjectMetrics(unitsWithMetrics)
 
       return {
         id: p.id,
@@ -321,13 +362,14 @@ export default function ObrasPainelPage() {
         city: p.city || '',
         address: p.address || '',
         created_at: p.created_at || null,
-        totalUnits: total,
-        avgProgress: avg,
-        counts,
+        totalUnits: metrics.totalUnits,
+        avgProgress: metrics.progressPct,
+        counts: metrics.counts,
+        status: metrics.generalStatus,
         is_active: p.is_active !== false,
       }
     })
-  }, [projects, showArchived])
+  }, [projects, showArchived, unitStagesByUnitId])
 
   const filteredCards = useMemo(() => {
     const q = search.trim().toLowerCase()

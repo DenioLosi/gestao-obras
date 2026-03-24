@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
 import { runAdminAction } from '../../lib/admin-api'
-import { calculateUnitMetrics } from '../../lib/unit-progress'
+import { applyUnitMetrics, calculateProjectMetrics, calculateUnitMetrics } from '../../lib/unit-progress'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -417,19 +417,7 @@ export default function ObraDetalhePage() {
   }, [stageTemplates, showArchivedStages])
 
   const unitsWithMetrics = useMemo(() => {
-    return units.map((unit) => {
-      const metrics = calculateUnitMetrics(unitStagesByUnitId[safeStr(unit.id)] || [], {
-        progress: unit.progress,
-        status: unit.status,
-      })
-
-      return {
-        ...unit,
-        progress: metrics.progressPct,
-        status: metrics.generalStatus,
-        stageMetrics: metrics,
-      }
-    })
+    return units.map((unit) => applyUnitMetrics(unit, unitStagesByUnitId[safeStr(unit.id)] || []))
   }, [units, unitStagesByUnitId])
 
   const visibleUnits = useMemo(() => {
@@ -437,20 +425,13 @@ export default function ObraDetalhePage() {
   }, [unitsWithMetrics, showArchivedUnits])
 
   const stats = useMemo(() => {
-    const counts = { pending: 0, in_progress: 0, done: 0 }
-    let sum = 0
-    let total = 0
-
-    for (const u of visibleUnits) {
-      const st = u.status || 'pending'
-      if (counts[st] === undefined) counts[st] = 0
-      counts[st] += 1
-      sum += clampPct(u.progress)
-      total += 1
+    const metrics = calculateProjectMetrics(visibleUnits)
+    return {
+      counts: metrics.counts,
+      total: metrics.totalUnits,
+      avg: metrics.progressPct,
+      status: metrics.generalStatus,
     }
-
-    const avg = total > 0 ? sum / total : 0
-    return { counts, total, avg }
   }, [visibleUnits])
 
   const filteredUnits = useMemo(() => {
