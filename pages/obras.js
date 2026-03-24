@@ -38,6 +38,12 @@ function includesText(v, q) {
   return safeStr(v).toLowerCase().includes(q)
 }
 
+function normalizeProgressStatus(value) {
+  const status = safeStr(value).trim()
+  if (status === 'pending' || status === 'in_progress' || status === 'done') return status
+  return 'pending'
+}
+
 function normalizeLookupKey(v) {
   return safeStr(v).trim().toLowerCase()
 }
@@ -166,6 +172,7 @@ export default function ObrasPainelPage() {
   const [formClientName, setFormClientName] = useState('')
   const [formCity, setFormCity] = useState('')
   const [formAddress, setFormAddress] = useState('')
+  const [progressFallbackNotice, setProgressFallbackNotice] = useState('')
 
   const [openMenuProjectId, setOpenMenuProjectId] = useState(null)
 
@@ -186,6 +193,111 @@ export default function ObrasPainelPage() {
         is_active: unit?.is_active !== false,
       })),
     })))
+  }
+
+  function hasMissingProjectProgressColumns(error) {
+    const message = safeStr(error?.message).toLowerCase()
+    return message.includes('projects.progress') || message.includes('projects.status') || message.includes('column progress does not exist')
+  }
+
+  function buildProjectQuery(baseSelect, profileRow, projectIds = null) {
+    let query = supabase
+      .from('projects')
+      .select(baseSelect)
+      .eq('tenant_id', profileRow.tenant_id)
+      .order('created_at', { ascending: true })
+
+    if (Array.isArray(projectIds)) {
+      query = query.in('id', projectIds)
+    }
+
+    return query
+  }
+
+  function normalizeProjectsFromFallback(projectRows) {
+    return (projectRows || []).map((project) => {
+      const units = (Array.isArray(project.units) ? project.units : []).map((unit) => ({
+        ...unit,
+        is_active: unit?.is_active !== false,
+      }))
+      const activeUnits = units.filter((unit) => unit.is_active !== false)
+      const progress = activeUnits.length > 0
+        ? activeUnits.reduce((sum, unit) => sum + clampPct(unit.progress), 0) / activeUnits.length
+        : 0
+
+      let status = 'pending'
+      if (activeUnits.length > 0) {
+        const allPending = activeUnits.every((unit) => clampPct(unit.progress) <= 0)
+        const allDone = activeUnits.every((unit) => clampPct(unit.progress) >= 100)
+        if (allDone) status = 'done'
+        else if (!allPending) status = 'in_progress'
+      }
+
+      return {
+        ...project,
+        progress,
+        status,
+        units,
+      }
+    })
+  }
+
+  async function loadProjectsWithFallback(profileRow, projectIds = null) {
+    const centralizedSelect = `
+      id,
+      name,
+      description,
+      client_name,
+      city,
+      address,
+      created_at,
+      tenant_id,
+      is_active,
+      progress,
+      status,
+      units (
+        id,
+        identifier,
+        status,
+        progress,
+        is_active
+      )
+    `
+    const fallbackSelect = `
+      id,
+      name,
+      description,
+      client_name,
+      city,
+      address,
+      created_at,
+      tenant_id,
+      is_active,
+      units (
+        id,
+        identifier,
+        status,
+        progress,
+        is_active
+      )
+    `
+
+    const primary = await buildProjectQuery(centralizedSelect, profileRow, projectIds)
+    if (!primary.error) {
+      setProgressFallbackNotice('')
+      return primary.data || []
+    }
+
+    if (!hasMissingProjectProgressColumns(primary.error)) {
+      throw primary.error
+    }
+
+    // Temporary compatibility while the Supabase migration adding projects.progress/status is not applied.
+    const fallback = await buildProjectQuery(fallbackSelect, profileRow, projectIds)
+    if (fallback.error) throw fallback.error
+
+    setProgressFallbackNotice('A migration de progresso da obra ainda não foi aplicada neste ambiente. A tela está usando um fallback temporário.')
+    return normalizeProjectsFromFallback(fallback.data || [])
   }
 
   async function recalculateUnitsAndProjects(unitIds) {
@@ -245,45 +357,19 @@ export default function ObrasPainelPage() {
       return
     }
 
-    const baseSelect = `
-      id,
-      name,
-      description,
-      client_name,
-      city,
-      address,
-      created_at,
-      tenant_id,
-      is_active,
-      progress,
-      status,
-      units (
-        id,
-        identifier,
-        status,
-        progress,
-        is_active
-      )
-    `
-
     if (p.role === 'admin') {
-      const { data, error } = await supabase
-        .from('projects')
-        .select(baseSelect)
-        .eq('tenant_id', p.tenant_id)
-        .order('created_at', { ascending: true })
-
-      if (error) {
+      try {
+        const data = await loadProjectsWithFallback(p)
+        setNormalizedProjects(data || [])
+        setLoading(false)
+        return
+      } catch (error) {
         console.error('Erro ao carregar projects:', error)
         alert(`Erro ao carregar obras: ${error.message}`)
         setProjects([])
         setLoading(false)
         return
       }
-
-      setNormalizedProjects(data || [])
-      setLoading(false)
-      return
     }
 
     const { data: mem, error: memErr } = await supabase
@@ -306,22 +392,17 @@ export default function ObrasPainelPage() {
       return
     }
 
-    const { data: data2, error: prjErr } = await supabase
-      .from('projects')
-      .select(baseSelect)
-      .in('id', ids)
-      .eq('tenant_id', p.tenant_id)
-      .order('created_at', { ascending: true })
-
-    if (prjErr) {
+    try {
+      const data2 = await loadProjectsWithFallback(p, ids)
+      setNormalizedProjects(data2 || [])
+      setLoading(false)
+      return
+    } catch (prjErr) {
       alert(`Erro ao carregar obras: ${prjErr.message}`)
       setProjects([])
       setLoading(false)
       return
     }
-
-    setNormalizedProjects(data2 || [])
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -352,7 +433,7 @@ export default function ObrasPainelPage() {
         totalUnits: activeUnits.length,
         avgProgress: clampPct(p.progress),
         counts,
-        status: safeStr(p.status).trim() || 'pending',
+        status: normalizeProgressStatus(p.status),
         is_active: p.is_active !== false,
       }
     })
@@ -853,6 +934,23 @@ export default function ObrasPainelPage() {
 
         </div>
       </div>
+
+      {progressFallbackNotice ? (
+        <div
+          style={{
+            marginTop: 14,
+            marginBottom: 14,
+            maxWidth: 1100,
+            color: '#92400e',
+            background: '#fffbeb',
+            border: '1px solid #fcd34d',
+            borderRadius: 12,
+            padding: 12,
+          }}
+        >
+          {progressFallbackNotice}
+        </div>
+      ) : null}
 
       <hr style={{ margin: '18px 0' }} />
 

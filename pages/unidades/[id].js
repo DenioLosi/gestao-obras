@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
@@ -569,6 +569,7 @@ export default function UnidadePage() {
   const [copyStructure, setCopyStructure] = useState(true)
   const [copyNotes, setCopyNotes] = useState(false)
   const [copyPhotos, setCopyPhotos] = useState(false)
+  const stagePhotoInputRefs = useRef({})
 
   function toggleStageExpanded(stageId) {
     setExpandedStageIds((prev) => ({
@@ -1400,6 +1401,28 @@ export default function UnidadePage() {
     }
   }
 
+  function setStagePhotoInputRef(stageId, element) {
+    const key = safeStr(stageId)
+    if (!key) return
+    if (element) stagePhotoInputRefs.current[key] = element
+    else delete stagePhotoInputRefs.current[key]
+  }
+
+  async function handleStagePhotoSelection(unitStageId, fileList) {
+    const file = fileList?.[0]
+    if (!file) return
+    const caption = window.prompt('Legenda (opcional):', '') || ''
+    await onUploadPhoto(unitStageId, file, caption)
+    const input = stagePhotoInputRefs.current[safeStr(unitStageId)]
+    if (input) input.value = ''
+  }
+
+  function openStagePhotoPicker(unitStageId) {
+    const input = stagePhotoInputRefs.current[safeStr(unitStageId)]
+    if (!input || uploadingStageId === unitStageId) return
+    input.click()
+  }
+
   async function deletePhoto(stageRow, photoRow) {
     if (!photoRow?.id) return
     if (!user?.id) {
@@ -1975,6 +1998,18 @@ export default function UnidadePage() {
                 opacity: s.is_active === false ? 0.7 : 1,
               }}
             >
+              <input
+                ref={(element) => setStagePhotoInputRef(s.id, element)}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                disabled={isUploading}
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                  await handleStagePhotoSelection(s.id, e.target.files)
+                }}
+              />
+
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>
@@ -2042,7 +2077,38 @@ export default function UnidadePage() {
 
                   <button
                     type="button"
-                    onClick={() => toggleStageExpanded(s.id)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      openStagePhotoPicker(s.id)
+                    }}
+                    disabled={isBusy || isUploading}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 10,
+                      border: '1px solid #ddd',
+                      background: '#fff',
+                      cursor: isBusy || isUploading ? 'not-allowed' : 'pointer',
+                      fontWeight: 900,
+                      fontSize: 17,
+                      lineHeight: 1,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      opacity: isBusy || isUploading ? 0.65 : 1,
+                    }}
+                    title={isUploading ? 'Enviando foto...' : 'Adicionar foto'}
+                    aria-label="Adicionar foto"
+                  >
+                    {isUploading ? '…' : '📷'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleStageExpanded(s.id)
+                    }}
                     style={{
                       padding: '8px 10px',
                       borderRadius: 10,
@@ -2384,19 +2450,26 @@ export default function UnidadePage() {
                     }}
                   >
                     {isUploading ? 'Enviando…' : 'Adicionar foto'}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      disabled={isUploading}
-                      style={{ display: 'none' }}
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0]
-                        if (!file) return
-                        const caption = window.prompt('Legenda (opcional):', '') || ''
-                        await onUploadPhoto(s.id, file, caption)
-                        e.target.value = ''
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        openStagePhotoPicker(s.id)
                       }}
-                    />
+                      disabled={isUploading}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        padding: 0,
+                        margin: 0,
+                        cursor: isUploading ? 'not-allowed' : 'pointer',
+                        fontWeight: 700,
+                        color: 'inherit',
+                      }}
+                    >
+                      selecionar
+                    </button>
                   </label>
 
                   <div style={{ fontSize: 12, color: '#666' }}>
