@@ -4,7 +4,7 @@ import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
 import { createIssue, deleteIssue, listIssuesByUnit, sortIssuesByUrgency, updateIssue } from '../../lib/issues-service'
 import { runAdminAction } from '../../lib/admin-api'
-import { buildUnitStageDuplicateSummary } from '../../lib/unit-stage-dedupe'
+import { calculateUnitMetrics } from '../../lib/unit-progress'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -722,9 +722,9 @@ export default function UnidadePage() {
       photos: Array.isArray(r.unit_stage_photos) ? r.unit_stage_photos : [],
       order_index: Number.isFinite(Number(r.order_index)) ? Number(r.order_index) : 1,
     }))
-    const summary = buildUnitStageDuplicateSummary(normalized)
-    setDuplicateReviewGroups(summary.reviewGroups)
-    return summary.rows
+    const metrics = calculateUnitMetrics(normalized)
+    setDuplicateReviewGroups(metrics.reviewGroups)
+    return metrics.rows
   }
 
   async function loadLogsForStages(stageList, currentUser) {
@@ -949,6 +949,66 @@ export default function UnidadePage() {
 
   const isAdmin = profile?.role === 'admin'
 
+  async function syncUnitProgressAndStatus(targetUnitId = unitId) {
+    if (!targetUnitId) return null
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    if (sessionError) throw sessionError
+
+    const response = await fetch('/api/units/recalculate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(sessionData?.session?.access_token
+          ? { Authorization: `Bearer ${sessionData.session.access_token}` }
+          : {}),
+      },
+      body: JSON.stringify({ unit_id: targetUnitId }),
+    })
+
+    const json = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(json?.error || 'Nao foi possivel recalcular a unidade.')
+    }
+
+    return json?.unit || null
+  }
+
+  async function getOpenIssueCountForStage(unitStageId) {
+    const { count, error } = await supabase
+      .from('issues')
+      .select('id', { count: 'exact', head: true })
+      .eq('unit_stage_id', unitStageId)
+      .in('status', ['open', 'in_progress'])
+
+    if (error) throw error
+    return count || 0
+  }
+
+  async function reopenStageForOpenIssue(unitStageId, currentUser, reason) {
+    const currentStage = stages.find((stage) => stage.id === unitStageId)
+    if (!currentStage || currentStage.status !== 'done') return false
+
+    const patch = {
+      status: 'in_progress',
+      finished_at: null,
+      started_at: currentStage.started_at || new Date().toISOString(),
+    }
+
+    const { error } = await supabase.from('unit_stages').update(patch).eq('id', unitStageId)
+    if (error) throw error
+
+    await createStageLog(
+      unitStageId,
+      'status_changed',
+      { status: currentStage.status, reason: reason || null },
+      { status: 'in_progress', reason: reason || null },
+      currentUser?.id
+    )
+
+    await syncUnitProgressAndStatus(currentStage.unit_id || unitId)
+    return true
+  }
+
   function openPhotoViewer(stagePhotos, photoId) {
     const sorted = [...(stagePhotos || [])].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
     setViewerPhotos(sorted)
@@ -1075,6 +1135,12 @@ export default function UnidadePage() {
         )
       }
 
+      if (payload.status === 'open' || payload.status === 'in_progress') {
+        await reopenStageForOpenIssue(currentStageId, currentUser, editingIssueId ? 'issue_updated' : 'issue_created')
+      }
+
+      await syncUnitProgressAndStatus(unitId)
+
       setIssueModalOpen(false)
       setIssueModalStageId('')
       resetIssueForm()
@@ -1110,6 +1176,12 @@ export default function UnidadePage() {
         serializeIssueForLog(data || { ...currentIssue, status: nextStatus }),
         currentUser.id
       )
+
+      if (nextStatus === 'open' || nextStatus === 'in_progress') {
+        await reopenStageForOpenIssue(currentIssue.unit_stage_id, currentUser, 'issue_reopened')
+      }
+
+      await syncUnitProgressAndStatus(unitId)
 
       await loadAll()
     } finally {
@@ -1148,6 +1220,8 @@ export default function UnidadePage() {
         currentUser.id
       )
 
+      await syncUnitProgressAndStatus(unitId)
+
       await loadAll()
     } finally {
       setIssueSavingId('')
@@ -1159,6 +1233,16 @@ export default function UnidadePage() {
       setBusyStageId(unitStageId)
 
       const current = stages.find((s) => s.id === unitStageId)
+      if (!current) return
+
+      if (newStatus === 'done') {
+        const openIssueCount = await getOpenIssueCountForStage(unitStageId)
+        if (openIssueCount > 0) {
+          alert('Não é possível concluir esta etapa enquanto houver pendências abertas.')
+          return
+        }
+      }
+
       const oldStatus = current?.status || null
       const patch = { status: newStatus }
 
@@ -1167,6 +1251,8 @@ export default function UnidadePage() {
       }
       if (newStatus === 'done') {
         patch.finished_at = new Date().toISOString()
+      } else {
+        patch.finished_at = null
       }
 
       const { error: upErr } = await supabase.from('unit_stages').update(patch).eq('id', unitStageId)
@@ -1184,6 +1270,8 @@ export default function UnidadePage() {
           new_value: { status: newStatus },
         })
       }
+
+      await syncUnitProgressAndStatus(current.unit_id || unitId)
 
       await loadAll()
     } finally {

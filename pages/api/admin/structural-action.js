@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { calculateUnitMetrics } from '../../../lib/unit-progress'
 
 const supabaseAdmin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -136,12 +137,25 @@ async function getProjectStages(projectId) {
 async function getUnitStages(unitId) {
   const { data, error } = await supabaseAdmin
     .from('unit_stages')
-    .select('id, unit_id, stage_id, status, notes, custom_name, order_index, is_active, unit_stage_photos ( id, path, caption, kind )')
+    .select('id, unit_id, stage_id, status, notes, started_at, due_date, custom_name, order_index, is_active, unit_stage_photos ( id, path, caption, kind )')
     .eq('unit_id', unitId)
     .order('order_index', { ascending: true })
 
   if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
   return Array.isArray(data) ? data : []
+}
+
+async function recalculateUnitProgress(unitId) {
+  const stageRows = await getUnitStages(unitId)
+  const metrics = calculateUnitMetrics(stageRows || [])
+  const patch = {
+    progress: Math.round(metrics.progressPct * 100) / 100,
+    status: metrics.generalStatus,
+  }
+
+  const { error } = await supabaseAdmin.from('units').update(patch).eq('id', unitId)
+  if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
+  return patch
 }
 
 async function insertUnitStagesAvoidingDuplicates(rows) {
@@ -649,13 +663,24 @@ async function handleCopyUnitStage(body, profile) {
 
 async function handleCreateIssue(body, profile) {
   const { unit, project } = await getUnitOrThrow(body.unit_id, profile.tenant_id)
+  const unitStageId = safeStr(body.unit_stage_id).trim()
+  const { data: stageRow, error: stageError } = await supabaseAdmin
+    .from('unit_stages')
+    .select('id, unit_id, status, started_at')
+    .eq('id', unitStageId)
+    .maybeSingle()
+
+  if (stageError || !stageRow || safeStr(stageRow.unit_id) !== safeStr(unit.id)) {
+    throw Object.assign(new Error(stageError?.message || 'Etapa da unidade nao encontrada.'), { statusCode: 404 })
+  }
+
   const { data, error } = await supabaseAdmin
     .from('issues')
     .insert({
       tenant_id: project.tenant_id,
       project_id: project.id,
       unit_id: unit.id,
-      unit_stage_id: body.unit_stage_id,
+      unit_stage_id: unitStageId,
       created_by: body.created_by,
       title: safeStr(body.title).trim(),
       description: safeStr(body.description).trim(),
@@ -669,7 +694,24 @@ async function handleCreateIssue(body, profile) {
     .maybeSingle()
 
   if (error) throw Object.assign(new Error(error.message), { statusCode: 400 })
-  return { issue: data || null }
+
+  let stageReopened = false
+  if (stageRow.status === 'done' && normalizeIssueStatus(body.status) !== 'resolved') {
+    const { error: reopenError } = await supabaseAdmin
+      .from('unit_stages')
+      .update({
+        status: 'in_progress',
+        finished_at: null,
+        started_at: stageRow.started_at || new Date().toISOString(),
+      })
+      .eq('id', stageRow.id)
+
+    if (reopenError) throw Object.assign(new Error(reopenError.message), { statusCode: 400 })
+    stageReopened = true
+  }
+
+  const unitPatch = await recalculateUnitProgress(unit.id)
+  return { issue: data || null, stageReopened, unit: unitPatch }
 }
 
 async function handleDeleteIssue(body, profile) {

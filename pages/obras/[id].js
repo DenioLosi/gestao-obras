@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../../lib/supabase'
 import { runAdminAction } from '../../lib/admin-api'
-import { buildUnitStageDuplicateSummary } from '../../lib/unit-stage-dedupe'
+import { calculateUnitMetrics } from '../../lib/unit-progress'
 
 const BUCKET = 'unit-stage-photos'
 
@@ -380,12 +380,12 @@ export default function ObraDetalhePage() {
         }
         const normalizedGrouped = {}
         for (const [unitId, rows] of Object.entries(grouped)) {
-          const summary = buildUnitStageDuplicateSummary(rows)
-          normalizedGrouped[unitId] = summary.rows
-          if (summary.reviewGroups.length > 0) {
+          const metrics = calculateUnitMetrics(rows)
+          normalizedGrouped[unitId] = metrics.rows
+          if (metrics.reviewGroups.length > 0) {
             warnings.push({
               unitId,
-              groups: summary.reviewGroups,
+              groups: metrics.reviewGroups,
             })
           }
         }
@@ -416,9 +416,25 @@ export default function ObraDetalhePage() {
     return stageTemplates.filter((s) => s.is_active !== false)
   }, [stageTemplates, showArchivedStages])
 
+  const unitsWithMetrics = useMemo(() => {
+    return units.map((unit) => {
+      const metrics = calculateUnitMetrics(unitStagesByUnitId[safeStr(unit.id)] || [], {
+        progress: unit.progress,
+        status: unit.status,
+      })
+
+      return {
+        ...unit,
+        progress: metrics.progressPct,
+        status: metrics.generalStatus,
+        stageMetrics: metrics,
+      }
+    })
+  }, [units, unitStagesByUnitId])
+
   const visibleUnits = useMemo(() => {
-    return showArchivedUnits ? units : units.filter((u) => u.is_active !== false)
-  }, [units, showArchivedUnits])
+    return showArchivedUnits ? unitsWithMetrics : unitsWithMetrics.filter((u) => u.is_active !== false)
+  }, [unitsWithMetrics, showArchivedUnits])
 
   const stats = useMemo(() => {
     const counts = { pending: 0, in_progress: 0, done: 0 }
@@ -463,41 +479,6 @@ export default function ObraDetalhePage() {
 
     return list
   }, [visibleUnits, search, statusFilter, sortBy])
-
-  function getUnitStageMetrics(unitId, unitProgress, unitStatus) {
-    const rows = unitStagesByUnitId[safeStr(unitId)] || []
-    const activeRows = rows.filter((r) => r.is_active !== false)
-
-    const totalStages = activeRows.length
-    const doneStages = activeRows.filter((r) => safeStr(r.status) === 'done').length
-    const pendingStages = activeRows.filter((r) => safeStr(r.status || 'pending') === 'pending').length
-    const inProgressStages = activeRows.filter((r) => safeStr(r.status) === 'in_progress').length
-    const notesCount = activeRows.filter((r) => safeStr(r.notes).trim()).length
-
-    let progressPct = 0
-    if (totalStages > 0) {
-      progressPct = (doneStages / totalStages) * 100
-    } else {
-      progressPct = clampPct(unitProgress || 0)
-    }
-
-    let generalStatus = unitStatus || 'pending'
-    if (totalStages > 0) {
-      if (doneStages === totalStages) generalStatus = 'done'
-      else if (doneStages > 0 || inProgressStages > 0) generalStatus = 'in_progress'
-      else generalStatus = 'pending'
-    }
-
-    return {
-      totalStages,
-      doneStages,
-      pendingStages,
-      inProgressStages,
-      notesCount,
-      progressPct,
-      generalStatus,
-    }
-  }
 
   function identifierAlreadyExists(identifier) {
     const id = safeStr(identifier).trim().toLowerCase()
@@ -1402,7 +1383,10 @@ export default function ObraDetalhePage() {
           <div style={{ color: '#666', marginTop: 8 }}>Nenhuma unidade encontrada.</div>
         ) : (
           filteredUnits.map((u) => {
-            const metrics = getUnitStageMetrics(u.id, u.progress, u.status)
+            const metrics = u.stageMetrics || calculateUnitMetrics(unitStagesByUnitId[safeStr(u.id)] || [], {
+              progress: u.progress,
+              status: u.status,
+            })
             const pctUnit = Math.round(metrics.progressPct)
 
             return (
